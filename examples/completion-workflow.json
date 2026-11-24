@@ -1,0 +1,10 @@
+{
+  "id": "phase-4-garment-completion",
+  "maxAttempts": 3,
+  "retryDelayMs": 1000,
+  "leaseMs": 30000,
+  "stages": [
+    { "id": "validate-artwork", "kind": "validate" },
+    { "id": "complete-garments", "kind": "action", "action": "tees4.completeGarments" }
+  ]
+}

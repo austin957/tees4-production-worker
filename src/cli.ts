@@ -14,6 +14,7 @@ const help = `Tees-4 Production Worker
   preview-google-sheet <artwork-selection.json> <policy.json>
   submit-google-sheet <artwork-selection.json> <policy.json>
   load-shopify-fixture <shopify-fixture.json>
+  load-sheet-fixture <sheet-fixture.json>
   run [--limit <count>] [--fail-after-create]
   list
   inspect <job-id>
@@ -43,6 +44,7 @@ async function main(): Promise<void> {
     'preview-google-sheet': {},
     'submit-google-sheet': {},
     'load-shopify-fixture': {},
+    'load-sheet-fixture': {},
     run: { limit: { type: 'string' }, 'fail-after-create': { type: 'boolean' } },
     approve: { by: { type: 'string' } },
     list: {}, inspect: {}, effects: {},
@@ -98,10 +100,15 @@ async function main(): Promise<void> {
         output = { duplicate: result.duplicate, ...report(result.job) };
         break;
       }
+      case 'load-sheet-fixture':
       case 'submit-sheet': {
         positional(positionals, 1);
         const fixture = object(readJson(positionals[0]!, 'sheet fixture'), 'Sheet fixture');
         onlyKeys(fixture, ['artwork', 'rows'], 'Sheet fixture');
+        if (command === 'load-sheet-fixture') {
+          output = { imported: store.importSheetFixtures(fixture.rows) };
+          break;
+        }
         const artwork = await readProductionArtwork(fixture.artwork, simulatedSheets(fixture.rows));
         const result = worker.submit(artwork, readJson(workflowPath, 'workflow'), values.mode);
         output = { duplicate: result.duplicate, ...report(result.job) };

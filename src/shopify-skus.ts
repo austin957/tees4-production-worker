@@ -98,14 +98,15 @@ export function existingSku(sku: string | null, expected: string): ExistingSkuRe
 }
 
 export async function assignSkus(
-  artwork: ProductionArtwork, mode: Mode, adapter: ShopifySkuAdapter, clock: () => number,
+  artwork: ProductionArtwork, mode: Mode, adapter: ShopifySkuAdapter, clock: () => number, expectedProductId?: string,
 ): Promise<Assignment[]> {
   // Resolve all garment bindings before the first write so a known ambiguity cannot cause partial writes.
   const products: ShopifyProduct[] = [];
   for (const garment of artwork.garments) {
     const product = resolveProduct(await adapter.findProducts(garment.productSku), artwork.artworkSku);
-    if (product.productSku !== garment.productSku || products.some(previous => previous.id === product.id)) {
-      throw new WorkerError('PRODUCT_BINDING_CONFLICT', 'A Shopify product cannot represent multiple garment assignments.');
+    if (product.productSku !== garment.productSku || (expectedProductId !== undefined && product.id !== expectedProductId)
+      || products.some(previous => previous.id === product.id)) {
+      throw new WorkerError('PRODUCT_BINDING_CONFLICT', 'The Shopify product binding does not uniquely match the garment assignment.');
     }
     products.push(product);
   }

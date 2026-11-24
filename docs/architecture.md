@@ -28,6 +28,8 @@ Phase 2 adds a read-only sheet adapter, artwork with multiple garment assignment
 
 Phase 3 adds authenticated Google Sheets intake with header validation and explicit row eligibility. It prepares the same queued artwork model from a verified selection and records unexpected variant SKUs for review. See the [Google Sheets intake guide](google-sheets.md).
 
+Phase 4 adds per-garment checkpoints and the simulated column I writer. The writer verifies the physical sheet row and the bound Shopify variants in the same SQLite transaction. See the [garment completion guide](garment-completion.md).
+
 ## Phase 1 scope
 
 This foundation runs against a local database and a CLI that drains currently available work. Operator names are local audit labels. The fixtures do not define production SKU uniqueness, source schemas, approval authority, platform write contracts, or reconciliation rules. Before enabling live integrations, define those rules with the owner and verify that each provider supports idempotent writes or can reliably reconcile an interrupted request.

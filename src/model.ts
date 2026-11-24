@@ -36,6 +36,7 @@ export function isProduction(artwork: Artwork): artwork is ProductionArtwork {
 }
 
 export const skuAction = 'shopify.assignSkus';
+export const completionAction = 'tees4.completeGarments';
 
 export const readActions = [
   'drive.readArtwork',
@@ -49,7 +50,7 @@ export const readActions = [
 export const writeActions = ['mockupify.generate', 'shopify.create', 'shopify.publish'] as const;
 export type ReadAction = typeof readActions[number];
 export type WriteAction = typeof writeActions[number];
-export type Action = ReadAction | WriteAction | typeof skuAction;
+export type Action = ReadAction | WriteAction | typeof skuAction | typeof completionAction;
 
 export type Stage =
   | { id: string; kind: 'validate' | 'approval' }
@@ -74,10 +75,20 @@ export interface Job {
   nextStage: number;
   failures: number;
   results: StageResult[];
+  garmentCompletions?: GarmentCompletion[];
   history: JobEvent[];
   availableAt: number;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface GarmentCompletion {
+  sourceRow: number;
+  productSku: string;
+  productId?: string;
+  status: 'pending_skus' | 'ready' | 'completed' | 'already_completed' | 'needs_review' | 'deferred' | 'retry_wait' | 'failed';
+  code?: string;
+  variantIds?: string[];
 }
 
 export type Details = Record<string, string>;

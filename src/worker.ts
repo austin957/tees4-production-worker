@@ -1,13 +1,15 @@
 import { readAction, verifyRead, writeAction } from './adapters.js';
 import type { Adapters } from './adapters.js';
 import { parseMode, parseWorkflow } from './config.js';
-import { asWorkerError, isProduction, isWrite, skuAction, WorkerError } from './model.js';
+import { completeGarments } from './garment-completion.js';
+import type { SheetsCompletionAdapter } from './garment-completion.js';
+import { asWorkerError, completionAction, isProduction, isWrite, skuAction, WorkerError } from './model.js';
 import type { Job, StageResult } from './model.js';
 import { parseJobArtwork } from './sheets.js';
 import { assertExportWindow, ProductionWriteDeferred, protectedUntil } from './production-schedule.js';
 import { assignSkus } from './shopify-skus.js';
 import type { ShopifySkuAdapter } from './shopify-skus.js';
-import type { Store } from './store.js';
+import type { Claim, Store } from './store.js';
 
 export interface LogEntry {
   at: number;
@@ -28,16 +30,19 @@ export class Worker {
     private readonly clock: () => number = Date.now,
     private readonly shopifySkus: ShopifySkuAdapter = store.shopifySkuAdapter(),
     private readonly exportMarginMinutes?: number,
+    private readonly sheetCompletion: SheetsCompletionAdapter = store.sheetsCompletionAdapter(),
   ) {}
 
   submit(input: unknown, workflow: unknown, mode: unknown = 'dry-run'): { job: Job; duplicate: boolean } {
     const artwork = parseJobArtwork(input);
     const definition = parseWorkflow(workflow);
     const actions = definition.stages.flatMap(stage => stage.kind === 'action' ? [stage.action] : []);
-    if (isProduction(artwork)
-      ? !actions.includes(skuAction) || actions.some(action => action !== skuAction)
-      : actions.includes(skuAction)) {
-      throw new WorkerError('WORKFLOW_INPUT_MISMATCH', 'The sheet-backed artwork and Shopify SKU assignment stage must be used together.');
+    const sheetActions = actions.filter(action => action === skuAction || action === completionAction);
+    const valid = isProduction(artwork)
+      ? sheetActions.length === actions.length && (actions.includes(completionAction) ? actions.length === 1 : actions.length > 0)
+      : sheetActions.length === 0;
+    if (!valid) {
+      throw new WorkerError('WORKFLOW_INPUT_MISMATCH', 'Use sheet-backed artwork with SKU assignment or the garment completion stage.');
     }
     const result = this.store.submit(artwork, definition, parseMode(mode), this.clock());
     this.emit(result.job, result.duplicate ? 'duplicate_submission' : 'submitted');
@@ -81,7 +86,7 @@ export class Worker {
 
       let result: StageResult;
       try {
-        result = await this.execute(job);
+        result = await this.execute(claim);
       } catch (caught) {
         if (caught instanceof ProductionWriteDeferred) {
           const updated = this.store.defer(claim, stage.id, caught, caught.retryAt, this.clock());
@@ -102,7 +107,8 @@ export class Worker {
     return { processed, failed };
   }
 
-  private async execute(job: Job): Promise<StageResult> {
+  private async execute(claim: Claim): Promise<StageResult> {
+    const { job } = claim;
     const stage = job.workflow.stages[job.nextStage]!;
     const stageId = stage.id;
     if (stage.kind === 'validate') {
@@ -112,8 +118,20 @@ export class Worker {
     if (stage.kind !== 'action') throw new WorkerError('INVALID_STAGE', 'Expected an action stage.');
     const { action } = stage;
     if (isProduction(job.artwork)) {
-      if (action !== skuAction) throw new WorkerError('WORKFLOW_INPUT_MISMATCH', 'This action requires Phase 1 fixture artwork.');
       if (job.mode !== 'dry-run' && job.mode !== 'simulate') throw new WorkerError('INVALID_MODE', 'No supported mode was selected.');
+      if (action === completionAction) {
+        const applied = await completeGarments(
+          job.artwork, job.mode, this.sheetCompletion, this.shopifySkus, this.clock,
+          outcome => {
+            if (!this.store.checkpointGarment(claim, outcome, this.clock())) {
+              throw new WorkerError('LEASE_LOST', 'The garment completion claim expired.');
+            }
+          },
+          job.garmentCompletions ?? [],
+        );
+        return { stageId, outcome: job.mode === 'dry-run' ? 'planned' : applied ? 'applied' : 'reused' };
+      }
+      if (action !== skuAction) throw new WorkerError('WORKFLOW_INPUT_MISMATCH', 'This action requires Phase 1 fixture artwork.');
       const skuAssignments = await assignSkus(job.artwork, job.mode, this.shopifySkus, this.clock);
       const dryRun = job.mode === 'dry-run';
       const blockedUntil = dryRun ? protectedUntil(this.clock()) : undefined;
@@ -123,7 +141,9 @@ export class Worker {
         skuAssignments,
       };
     }
-    if (action === skuAction) throw new WorkerError('WORKFLOW_INPUT_MISMATCH', 'SKU assignment requires sheet-backed artwork.');
+    if (action === skuAction || action === completionAction) {
+      throw new WorkerError('WORKFLOW_INPUT_MISMATCH', 'This action requires sheet-backed artwork.');
+    }
     if (!isWrite(action)) {
       const details = await readAction(this.adapters, action, job.artwork);
       verifyRead(action, details, job.artwork);
@@ -157,6 +177,7 @@ export function report(job: Job) {
     ...(job.status === 'awaiting_approval' ? { awaitingApproval: job.workflow.stages[job.nextStage]?.id } : {}),
     ...(job.status === 'retry_wait' ? { retryAt: job.availableAt } : {}),
     stages: job.results,
+    ...(job.garmentCompletions ? { garmentCompletions: job.garmentCompletions } : {}),
     history: job.history,
   };
 }

@@ -30,7 +30,7 @@ function parseRows(rows: readonly unknown[]) {
     const n = integer(row.rowNumber, 'Sheet row number', 1, Number.MAX_SAFE_INTEGER);
     if (rowNumbers.has(n)) throw new WorkerError('DUPLICATE_SHEET_ROW', `Sheet row ${n} appears more than once.`);
     rowNumbers.add(n);
-    if (!Array.isArray(row.cells) || row.cells.length !== 11) {
+    if (!Array.isArray(row.cells) || row.cells.length < 11) {
       throw new WorkerError('INVALID_SHEET_ROW', `Sheet row ${n} must contain positional cells A through K.`);
     }
     const [a, b, c, d, e, f, g, h, , , k] = row.cells as unknown[];

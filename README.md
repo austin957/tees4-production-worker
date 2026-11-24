@@ -55,3 +55,7 @@ Use the [SKU processing guide](docs/sku-processing.md) to run a two-garment fixt
 ## Phase 3 Google Sheets intake
 
 The [Google Sheets intake guide](docs/google-sheets.md) covers read-only authorization, header and eligibility configuration, and previewing or queuing verified garment assignments. Mockupify and Shopify continue to use simulated adapters.
+
+## Phase 4 garment completion
+
+The [garment completion guide](docs/garment-completion.md) shows how to simulate a Master Input column I update and inspect independent results for each garment.

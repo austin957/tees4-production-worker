@@ -9,6 +9,7 @@
 - Protect new Mockupify exports and initial Shopify variant SKU writes daily from 4:20 PM inclusive to 9:10 PM exclusive America/Chicago. Check the clock immediately before each write. Defer blocked work without spending a retry attempt or resetting checkpoints.
 - Require an explicitly configured Mockupify export safety margin and start a new export only when more than that margin remains before the next 4:20 PM cutoff.
 - Assign initial Shopify SKUs only to blank variants. Preserve every existing nonblank SKU, flag unexpected values for review, and stop on ambiguous product bindings.
+- Complete each garment independently. The simulated Sheets writer may set only blank column I on a physical Master Input row verified by its H and K SKUs, after confirming every variant on the bound Shopify product ID has exactly the column H SKU. Preserve TeeInBlue and Flash Transfers statuses.
 - Stop and surface missing or conflicting required information. Record business rules only when the owner has documented them. Label fixture conventions as such.
 - Preserve completed checkpoints and stable write identities across retries. Cover approval, duplicate prevention, and recovery when changing queue or adapter behavior.
 - Use ignored local storage for queue databases. Keep fixture data synthetic and avoid logging raw adapter exceptions or secrets.

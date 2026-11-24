@@ -2,13 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { isProduction, WorkerError } from './model.js';
+import { integer, object, onlyKeys } from './config.js';
+import type { GarmentCompletionTarget, SheetsCompletionAdapter } from './garment-completion.js';
+import { completionAction, isProduction, WorkerError } from './model.js';
 import { assertSkuWindow } from './production-schedule.js';
 import { existingSku, parseShopifyCatalog, resolveProduct } from './shopify-skus.js';
 import type { InitialSkuTarget, ShopifyProduct, ShopifyProductBinding, ShopifySkuAdapter } from './shopify-skus.js';
-import type { Artwork, Details, Job, Mode, StageResult, Workflow, WriteAction } from './model.js';
+import type { Artwork, Details, GarmentCompletion, Job, Mode, StageResult, Workflow, WriteAction } from './model.js';
 
-interface Claim {
+export interface Claim {
   job: Job;
   token: string;
 }
@@ -18,9 +20,10 @@ interface Effect {
   reused: boolean;
 }
 
-function identity(artwork: Artwork, mode: Mode): string {
+function identity(artwork: Artwork, mode: Mode, workflow: Workflow): string {
+  const completion = workflow.stages.some(stage => stage.kind === 'action' && stage.action === completionAction);
   return JSON.stringify(isProduction(artwork)
-    ? ['production', mode, artwork.artworkSku]
+    ? [completion ? 'production-completion' : 'production', mode, artwork.artworkSku]
     : [mode, artwork.artworkId, artwork.sku]);
 }
 
@@ -45,6 +48,12 @@ export class Store {
           body TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(status, available_at, created_at);
+        CREATE TABLE IF NOT EXISTS master_input_fixtures (
+          row_number INTEGER PRIMARY KEY,
+          cells TEXT NOT NULL,
+          fixture TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS master_input_product_sku ON master_input_fixtures(json_extract(cells, '$[7]'));
         CREATE TABLE IF NOT EXISTS shopify_products (
           id TEXT PRIMARY KEY,
           artwork_sku TEXT NOT NULL,
@@ -105,7 +114,7 @@ export class Store {
 
   submit(artwork: Artwork, workflow: Workflow, mode: Mode, now: number): { job: Job; duplicate: boolean } {
     return this.transaction(() => {
-      const key = identity(artwork, mode);
+      const key = identity(artwork, mode, workflow);
       const row = this.db.prepare('SELECT body FROM jobs WHERE identity = ?').get(key);
       if (row) {
         const job = JSON.parse(row.body as string) as Job;
@@ -150,15 +159,22 @@ export class Store {
     });
   }
 
-  private settle(claim: Claim, now: number, update: (job: Job) => void): Job | undefined {
+  private settle(claim: Claim, now: number, update: (job: Job) => void, keepLease = false): Job | undefined {
     return this.transaction(() => {
-      const row = this.db.prepare('SELECT body FROM jobs WHERE id = ? AND claim_token = ? AND lease_until > ?')
+      const row = this.db.prepare('SELECT body, lease_until FROM jobs WHERE id = ? AND claim_token = ? AND lease_until > ?')
         .get(claim.job.id, claim.token, now);
       if (!row) return undefined;
       const job = JSON.parse(row.body as string) as Job;
       update(job);
-      return this.save(job, now);
+      return keepLease ? this.save(job, now, claim.token, row.lease_until as number) : this.save(job, now);
     });
+  }
+
+  checkpointGarment(claim: Claim, outcome: GarmentCompletion, now: number): boolean {
+    return this.settle(claim, now, job => {
+      job.garmentCompletions = [...(job.garmentCompletions ?? []).filter(row => row.sourceRow !== outcome.sourceRow), outcome]
+        .sort((left, right) => left.sourceRow - right.sourceRow);
+    }, true) !== undefined;
   }
 
   private advance(job: Job, result: StageResult, now: number): void {
@@ -169,7 +185,8 @@ export class Store {
     job.availableAt = now;
     job.status = 'queued';
     if (job.nextStage === job.workflow.stages.length) {
-      const needsReview = job.results.some(stage => stage.skuAssignments?.some(variant => variant.review));
+      const needsReview = job.results.some(stage => stage.skuAssignments?.some(variant => variant.review))
+        || job.garmentCompletions?.some(garment => garment.status === 'needs_review');
       job.status = needsReview ? 'needs_review' : 'completed';
       job.history.push({ at: now, event: job.status });
     }
@@ -212,11 +229,100 @@ export class Store {
       job.failures += 1;
       const retry = error.retryable && job.failures < job.workflow.maxAttempts;
       job.status = retry ? 'retry_wait' : 'failed';
+      if (!retry) {
+        for (const garment of job.garmentCompletions ?? []) {
+          if (garment.status === 'retry_wait') garment.status = 'failed';
+        }
+      }
       job.availableAt = now + (retry ? job.workflow.retryDelayMs : 0);
       job.history.push({
         at: now, event: retry ? 'retry_scheduled' : 'failed', stageId, code: error.code, message: error.message,
       });
     });
+  }
+
+  importSheetFixtures(input: unknown): number {
+    if (!Array.isArray(input) || !input.length) {
+      throw new WorkerError('INVALID_SHEET_ROW', 'Supply one or more simulated Master Input rows.');
+    }
+    return this.transaction(() => {
+      let imported = 0;
+      const seen = new Set<number>();
+      for (const entry of input as unknown[]) {
+        const row = object(entry, 'Sheet fixture row');
+        onlyKeys(row, ['rowNumber', 'cells'], 'Sheet fixture row');
+        const rowNumber = integer(row.rowNumber, 'Sheet fixture row number', 1, Number.MAX_SAFE_INTEGER);
+        if (seen.has(rowNumber)) throw new WorkerError('DUPLICATE_SHEET_ROW', 'The fixture repeats a physical row number.');
+        seen.add(rowNumber);
+        if (!Array.isArray(row.cells) || row.cells.length < 11) {
+          throw new WorkerError('INVALID_SHEET_ROW', 'Fixture rows must contain positional cells A through K.');
+        }
+        const contents = JSON.stringify(row.cells);
+        const existing = this.db.prepare('SELECT fixture FROM master_input_fixtures WHERE row_number = ?').get(rowNumber);
+        if (existing) {
+          if (existing.fixture !== contents) throw new WorkerError('FIXTURE_CONFLICT', 'An existing physical sheet row differs from the fixture.');
+          continue;
+        }
+        this.db.prepare('INSERT INTO master_input_fixtures (row_number, cells, fixture) VALUES (?, ?, ?)')
+          .run(rowNumber, contents, contents);
+        imported += 1;
+      }
+      return imported;
+    });
+  }
+
+  private inspectGarment(target: GarmentCompletionTarget, expectedProductId?: string): GarmentCompletion {
+    const { sourceRow, productSku, artworkSku } = target;
+    const report = { sourceRow, productSku };
+    const row = this.db.prepare(`
+      SELECT json_extract(cells, '$[8]') AS completion, json_type(cells, '$[8]') AS completion_type
+      FROM master_input_fixtures
+      WHERE row_number = ? AND json_extract(cells, '$[7]') = ? AND json_extract(cells, '$[10]') = ?
+    `).get(sourceRow, productSku, artworkSku);
+    if (!row) return { ...report, status: 'needs_review', code: 'SHEET_ROW_MISMATCH' };
+    const duplicate = this.db.prepare(`
+      SELECT row_number FROM master_input_fixtures WHERE json_extract(cells, '$[7]') = ? AND row_number <> ? LIMIT 1
+    `).get(productSku, sourceRow);
+    if (duplicate) return { ...report, status: 'needs_review', code: 'DUPLICATE_PRODUCT_SKU' };
+
+    if (row.completion === 'Yes') return { ...report, status: 'already_completed' };
+    if (row.completion_type !== 'null' && row.completion !== '') {
+      return { ...report, status: 'needs_review', code: 'EXISTING_COMPLETION_VALUE' };
+    }
+
+    const product = resolveProduct(this.findShopifyBindings(productSku), artworkSku);
+    const bound = { ...report, productId: product.id };
+    if (expectedProductId !== undefined && product.id !== expectedProductId) {
+      return { ...bound, status: 'needs_review', code: 'PRODUCT_BINDING_CONFLICT' };
+    }
+    const variants = this.db.prepare('SELECT id, sku FROM shopify_variants WHERE product_id = ? ORDER BY id').all(product.id);
+    if (!variants.length) return { ...bound, status: 'needs_review', code: 'VARIANTS_NOT_FOUND' };
+
+    const unexpected = variants.filter(variant => variant.sku !== null && variant.sku !== productSku);
+    if (unexpected.length) {
+      return { ...bound, status: 'needs_review', code: 'UNEXPECTED_VARIANT_SKU', variantIds: unexpected.map(row => row.id as string) };
+    }
+    const blank = variants.filter(variant => variant.sku === null);
+    if (blank.length) {
+      return { ...bound, status: 'pending_skus', variantIds: blank.map(row => row.id as string) };
+    }
+    return { ...bound, status: 'ready' };
+  }
+
+  sheetsCompletionAdapter(): SheetsCompletionAdapter {
+    return {
+      inspect: async target => this.inspectGarment(target),
+      markComplete: async (target, productId) => this.transaction(() => {
+        const report = this.inspectGarment(target, productId);
+        if (report.status !== 'ready') return report;
+        this.db.prepare(`
+          UPDATE master_input_fixtures SET cells = json_set(cells, '$[8]', 'Yes')
+          WHERE row_number = ? AND json_extract(cells, '$[7]') = ? AND json_extract(cells, '$[10]') = ?
+            AND (json_type(cells, '$[8]') = 'null' OR json_extract(cells, '$[8]') = '')
+        `).run(target.sourceRow, target.productSku, target.artworkSku);
+        return { ...report, status: 'completed' };
+      }),
+    };
   }
 
   importShopifyFixtures(input: unknown): number {

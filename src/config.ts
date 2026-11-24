@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { readActions, skuAction, WorkerError, writeActions } from './model.js';
+import { completionAction, readActions, skuAction, WorkerError, writeActions } from './model.js';
 import type { Action, ArtworkIdentity, LegacyArtwork, Mode, Stage, Workflow } from './model.js';
 
 export function readJson(path: string, purpose: string): unknown {
@@ -74,7 +74,7 @@ function parseStage(input: unknown): Stage {
     onlyKeys(value, ['id', 'kind'], 'Stage');
     return { id, kind: value.kind };
   }
-  const actions: readonly unknown[] = [...readActions, ...writeActions, skuAction];
+  const actions: readonly unknown[] = [...readActions, ...writeActions, skuAction, completionAction];
   if (value.kind === 'action' && actions.includes(value.action)) {
     onlyKeys(value, ['id', 'kind', 'action'], 'Stage');
     return { id, kind: 'action', action: value.action as Action };
