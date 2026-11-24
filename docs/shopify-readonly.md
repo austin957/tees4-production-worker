@@ -44,6 +44,19 @@ npm run --silent worker -- shopify-variants gid://shopify/Product/2
 
 `shopify-products` lists up to five recent product GIDs and titles for inspection. It does not match products to sheet rows or create bindings. `shopify-provenance` reads the creation time, tags, and the first 25 metafield names visible to the app, without fetching metafield values. A tag or matching title is not independent evidence of the creating app or the source row. Product output includes the lifecycle status and the Online Store publication timestamp. Those fields do not establish publication to other sales channels. Variant SKU strings come from the product variant query and are preserved exactly. The query does not require extra inventory scopes. Shopify may change a product while pagination is in progress, so treat the output as an inspection of current data rather than a lock on the product. [Shopify Product query reference](https://shopify.dev/docs/api/admin-graphql/2026-10/queries/product)
 
+## Monitor the ADJUST queue
+
+```sh
+npm run --silent worker -- shopify-adjust
+npm run --silent worker -- shopify-adjust gid://shopify/Product/10461800792355
+```
+
+The first command sends Shopify's `tag:ADJUST` product search and pages through the results. Shopify search can also return case variants. The worker confirms the stored tag is exactly `ADJUST`, lists other search results separately, and returns a count only after the search finishes. If Shopify cannot finish pagination within 250 pages or repeats a cursor, the command fails with no complete count. The second command checks one specific GID regardless of its tags. [Shopify products search](https://shopify.dev/docs/api/admin-graphql/2026-10/queries/products)
+
+Each exact match includes the product GID, title, Shopify status, tags, total variants, and the count of each SKU exactly as stored. The worker distinguishes consistent data from blank SKUs, whitespace-only SKUs, duplicate or missing variant IDs, and multiple distinct SKUs. These are observations for review. Uniform or mixed SKUs alone do not establish whether Hextom completed its work. The tag identifies products for monitoring and does not establish a Master Input binding.
+
+Run the command again to monitor the queue by GID and compare snapshots. Reads can run during the 4:20–9:10 PM America/Chicago protected window. This command does not modify tags or SKUs, trigger exports, or schedule writes. Because Shopify data can change between reads, the report reflects the observations made during the scan.
+
 ## Compare a binding with Master Input
 
 Prepare a binding manifest using the IDs verified during Mockupify reconciliation or independently verified in Shopify. The [example manifest](../examples/shopify-readonly-bindings.json) extends the Phase 5 binding with the shop GID and the complete expected variants. Record the physical row, both assigned SKUs, and the Mockupify export reference when available. Use the exact Shopify option names if they differ from `Size` or `Color`. A null expected option value declares that the variant should have no such option.

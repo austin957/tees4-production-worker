@@ -4,6 +4,7 @@ import { WorkerError } from './model.js';
 const targetVersion = '2026-10';
 const pageSize = 100;
 const discoveryLimit = 5;
+const maxTagPages = 250;
 const attempts = 4;
 const maxDelayMs = 30_000;
 
@@ -54,9 +55,16 @@ const productsQuery = `query Tees4ReadProducts($first: Int!, $after: String) {
   }
 }`;
 
+const adjustCandidatesQuery = `query Tees4ReadAdjustCandidates($first: Int!, $after: String, $search: String!) {
+  products(first: $first, after: $after, query: $search, sortKey: ID) {
+    nodes { id title status tags }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+
 const productQuery = `query Tees4ReadProduct($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {
-    id title handle status vendor publishedAt
+    id title handle status vendor publishedAt tags
     options { id name optionValues { name } }
     variants(first: $first, after: $after) {
       nodes { id sku selectedOptions { name value } }
@@ -77,20 +85,21 @@ const provenanceQuery = `query Tees4ReadProvenance($id: ID!) {
   }
 }`;
 
-const queries = { identity: shopQuery, products: productsQuery, product: productQuery, provenance: provenanceQuery };
+const queries = {
+  identity: shopQuery, products: productsQuery, adjustCandidates: adjustCandidatesQuery,
+  product: productQuery, provenance: provenanceQuery,
+};
 
 export interface ProductSummary { id: string; title: string }
+export interface TaggedProduct extends ProductSummary { status: string; tags: string[] }
 export interface ShopIdentity { id: string; domain: string; scopes: string[]; apiVersion: string }
 export interface ProductVariantRead {
   id: string | null;
   sku: string | null;
   selectedOptions: { name: string; value: string }[];
 }
-export interface ProductRead {
-  id: string;
-  title: string;
+export interface ProductRead extends TaggedProduct {
   handle: string;
-  status: string;
   vendor: string;
   publishedAt: string | null;
   options: { id: string; name: string; values: string[] }[];
@@ -311,6 +320,29 @@ export class ShopifyReadonlyClient {
     return products;
   }
 
+  async adjustCandidates(): Promise<TaggedProduct[]> {
+    const products = new Map<string, TaggedProduct>();
+    const cursors = new Set<string>();
+    let after: string | null = null;
+    for (let page = 0; page < maxTagPages; page += 1) {
+      const data = await this.verifiedQuery('adjustCandidates', { first: pageSize, after, search: 'tag:ADJUST' });
+      const connection = record(data.products);
+      for (const value of array(connection.nodes)) {
+        const node = record(value);
+        const id = shopifyGid(node.id, 'Product');
+        products.set(id, { id, title: string(node.title), status: string(node.status), tags: array(node.tags).map(string) });
+      }
+      const next = record(connection.pageInfo);
+      if (next.hasNextPage === false) return [...products.values()];
+      if (next.hasNextPage !== true || typeof next.endCursor !== 'string' || !next.endCursor || cursors.has(next.endCursor)) {
+        throw new WorkerError('SHOPIFY_PAGINATION', 'Shopify returned an invalid or repeated ADJUST search cursor.');
+      }
+      cursors.add(next.endCursor);
+      after = next.endCursor;
+    }
+    throw new WorkerError('SHOPIFY_PAGINATION', 'The ADJUST search exceeded its page limit. No complete count is available.');
+  }
+
   async productProvenance(id: string) {
     shopifyGid(id, 'Product');
     const data = await this.verifiedQuery('provenance', { id });
@@ -349,7 +381,7 @@ export class ShopifyReadonlyClient {
       const product = this.productRecord(data, id);
       result ??= {
         id, title: string(product.title), handle: string(product.handle), vendor: string(product.vendor),
-        status: string(product.status), publishedAt: nullableString(product.publishedAt),
+        status: string(product.status), publishedAt: nullableString(product.publishedAt), tags: array(product.tags).map(string),
         options: array(product.options).map(value => {
           const option = record(value);
           return { id: string(option.id), name: string(option.name), values: array(option.optionValues).map(item => string(record(item).name)) };

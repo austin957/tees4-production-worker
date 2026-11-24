@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { readJson } from '../src/config.js';
 import { readProductionArtwork, simulatedSheets } from '../src/sheets.js';
+import { discoverAdjustProducts } from '../src/shopify-adjust.js';
 import { compareShopifyProduct, selectShopifyBinding, shopifyAssignment } from '../src/shopify-comparison.js';
 import { identifyShop, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from '../src/shopify-readonly.js';
 import type { ProductRead } from '../src/shopify-readonly.js';
@@ -29,7 +30,7 @@ const variant = (n: number, sku: string | null = '000710', size = 'M', color = '
 });
 const product = (nodes: unknown[], endCursor: string | null = null) => ({
   id, title: 'Fixture Product', handle: 'fixture-product', status: 'ACTIVE', vendor: 'Fixture Vendor',
-  publishedAt: '2026-10-05T12:00:00Z',
+  publishedAt: '2026-10-05T12:00:00Z', tags: [],
   options: [{ id: 'fixture-option', name: 'Color', optionValues: [{ name: 'White' }, { name: 'Black' }] }],
   variants: { nodes, pageInfo: { hasNextPage: endCursor !== null, endCursor } },
 });
@@ -200,6 +201,8 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
         throw new Error('Unexpected Shopify operation');
       }
       const data = payload.query.includes('Tees4ReadIdentity') ? ${JSON.stringify(identity)} :
+        payload.query.includes('Tees4ReadAdjustCandidates') ?
+        { products: { nodes: [], pageInfo: { hasNextPage: false } } } :
         { product: ${JSON.stringify(product([variant(3, null), variant(4, '000710', 'L', 'Black')]))} };
       return Response.json({ data }, { headers: { 'X-Shopify-API-Version': '2026-10' } });
     };`);
@@ -216,6 +219,8 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
   assert.equal(run('shopify-auth').id, config.shopId);
   assert.equal(run('shopify-product', id).id, id);
   assert.equal(run('shopify-variants', id).variants.length, 2);
+  assert.equal(run('shopify-adjust').count, 0);
+  assert.equal(run('shopify-adjust', id).hasAdjustTag, false);
   const compare = ['examples/shopify-readonly-bindings.json', '2', 'examples/sheet-input.json', '--fixture'];
   assert.equal(run('shopify-compare', ...compare).status, 'sku_assignment_required');
   assert.equal(run('shopify-preview', ...compare).proposedAssignments.length, 1);
@@ -314,4 +319,46 @@ test('provenance reads only the requested product and never fetches metafield va
   assert.match(request.query, /^query Tees4ReadProvenance/);
   assert.doesNotMatch(request.query, /\bvalue\b|\bmutation\b/);
   assert.deepEqual(request.variables, { id });
+});
+
+test('ADJUST discovery pages by tag filter, confirms exact spelling and rechecks candidates on load', async () => {
+  const otherId = 'gid://shopify/Product/3';
+  const removedId = 'gid://shopify/Product/4';
+  const candidate = (productId: string, tags: string[]) => ({ id: productId, title: 'Fixture', status: 'ACTIVE', tags });
+  const page = (nodes: unknown[], cursor: string | null) => response({ data: {
+    products: { nodes, pageInfo: { hasNextPage: cursor !== null, endCursor: cursor } },
+  } });
+  const { client, calls } = mocked([
+    response(grant), response({ data: identity }),
+    page([candidate(otherId, ['adjust']), candidate(id, ['ADJUST'])], 'page-2'),
+    page([candidate(removedId, ['ADJUST'])], null),
+    response({ data: { product: { ...product([variant(3), variant(4, null)], 'variant-page-2'), tags: ['ADJUST'] } } }),
+    response({ data: { product: { ...product([variant(5, 'another-sku'), variant(3, '000710')]), tags: ['ADJUST'] } } }),
+    response({ data: { product: { ...product([variant(6)]), id: removedId, tags: ['adjust'] } } }),
+  ]);
+  const discovered = await discoverAdjustProducts(client);
+  assert.equal(discovered.count, 1);
+  assert.deepEqual(discovered.withoutExactTag.map(row => row.id), [otherId, removedId]);
+  assert.equal(discovered.products[0]?.variantCount, 4);
+  assert.deepEqual(discovered.products[0]?.sku, {
+    status: 'incomplete_and_conflicting',
+    blankSkuCount: 1, whitespaceSkuCount: 0, missingVariantIdCount: 0,
+    duplicateVariantIds: [variant(3).id],
+    values: [{ value: '000710', variantCount: 2 }, { value: 'another-sku', variantCount: 1 }],
+  });
+  const queries = await Promise.all(calls.slice(2).map(call => call.json()));
+  assert.match(queries[0].query, /^query Tees4ReadAdjustCandidates/);
+  assert.match(queries[0].query, /query: \$search/);
+  assert.deepEqual(queries[0].variables, { first: 100, after: null, search: 'tag:ADJUST' });
+  assert.deepEqual(queries[1].variables, { first: 100, after: 'page-2', search: 'tag:ADJUST' });
+  assert.deepEqual(queries.slice(2).map(query => query.variables.id), [id, id, removedId]);
+  assert.ok(queries.every(query => /^query Tees4Read/.test(query.query)));
+});
+
+test('ADJUST discovery refuses an incomplete count when a cursor repeats', async () => {
+  const page = () => response({ data: {
+    products: { nodes: [], pageInfo: { hasNextPage: true, endCursor: 'same' } },
+  } });
+  const { client } = mocked([response(grant), response({ data: identity }), page(), page()]);
+  await assert.rejects(discoverAdjustProducts(client), { code: 'SHOPIFY_PAGINATION' });
 });

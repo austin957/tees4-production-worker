@@ -8,6 +8,7 @@
 - Use the supplied artwork and assigned SKU. Never generate artwork or SKUs, overwrite artwork, omit designer attribution, or publish without explicit approval.
 - Protect new Mockupify exports and initial Shopify variant SKU writes daily from 4:20 PM inclusive to 9:10 PM exclusive America/Chicago. Check the clock immediately before each write. Defer blocked work without spending a retry attempt or resetting checkpoints.
 - Require an explicitly configured Mockupify export safety margin and start a new export only when more than that margin remains before the next 4:20 PM cutoff.
+- Use the exact Shopify tag ADJUST for read-only Hextom work discovery. Treat the tag and observed SKUs as signals only. Never infer a Master Input binding or Hextom completion from them.
 - Assign initial Shopify SKUs only to blank variants. Preserve every existing nonblank SKU, flag unexpected values for review, and stop on ambiguous product bindings.
 - Complete each garment independently. The simulated Sheets writer may set only blank column I on a physical Master Input row verified by its H and K SKUs, after confirming every variant on the bound Shopify product ID has exactly the column H SKU. Preserve TeeInBlue and Flash Transfers statuses.
 - Stop and surface missing or conflicting required information. Record business rules only when the owner has documented them. Label fixture conventions as such.
