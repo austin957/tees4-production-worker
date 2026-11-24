@@ -1,10 +1,12 @@
 import { integer, object, readJson, requiredText } from './config.js';
-import { googleSheets, parseSheetPolicy, previewSheetArtwork, readMasterInputSkuRows } from './google-sheets.js';
+import { googleSheets, parseSheetPolicy, previewSheetArtwork, readMasterInputMatchRows, readMasterInputSkuRows } from './google-sheets.js';
 import { WorkerError } from './model.js';
 import { readProductionArtwork, simulatedSheets } from './sheets.js';
 import { verifyHextom } from './shopify-hextom.js';
-import { discoverAdjustProducts, summarizeAdjustProduct } from './shopify-adjust.js';
+import { discoverAdjustProducts, readAdjustProducts, summarizeAdjustProduct } from './shopify-adjust.js';
 import { compareShopifyProduct, selectShopifyBinding, shopifyAssignment } from './shopify-comparison.js';
+import { matchShopifyProducts, parseMatchFixture, parseOwnerConfirmations } from './shopify-matching.js';
+import type { MatchSheet } from './shopify-matching.js';
 import { parseSheetFixture, parseVerifiedSource, reconcileShopifySource } from './shopify-reconciliation.js';
 import type { ReconciliationRequest, SheetEvidence } from './shopify-reconciliation.js';
 import { identifyShop, shopifyGid, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from './shopify-readonly.js';
@@ -12,6 +14,9 @@ import { identifyShop, shopifyGid, shopifyIdentifyConfig, shopifyReadConfig, Sho
 export const shopifyCommands = {
   'shopify-auth': {},
   'shopify-adjust': {},
+  'shopify-match': {
+    confirmations: { type: 'string' }, 'header-row': { type: 'string' }, 'sheet-fixture': { type: 'string' },
+  },
   'shopify-hextom-verify': { 'verified-base-sku': { type: 'string' } },
   'shopify-reconcile': {
     'product-sku': { type: 'string' }, 'artwork-sku': { type: 'string' }, 'evidence-ref': { type: 'string' },
@@ -45,10 +50,24 @@ async function readSourceSheet(values: Record<string, unknown>): Promise<SheetEv
   }
 }
 
+async function readMatchingSheet(values: Record<string, unknown>): Promise<MatchSheet> {
+  if (values['sheet-fixture'] !== undefined) {
+    if (values['header-row'] !== undefined) throw new WorkerError('CLI_USAGE', 'Use --header-row only with the live sheet read.');
+    return parseMatchFixture(readJson(requiredText(values['sheet-fixture'], 'Matching fixture path'), 'matching fixture'));
+  }
+  const headerRow = readRowNumber(values['header-row'] ?? '1', 'Master Input header row');
+  try {
+    return { kind: 'live', rows: await readMasterInputMatchRows(headerRow) };
+  } catch (error) {
+    if (!(error instanceof WorkerError)) throw error;
+    return { kind: 'unavailable', code: error.code, message: error.message };
+  }
+}
+
 export async function runShopifyCommand(command: string, args: string[], values: Record<string, unknown>) {
   const fixture = values.fixture === true;
   const comparison = command === 'shopify-preview' || command === 'shopify-compare';
-  const noArguments = command === 'shopify-auth' || command === 'shopify-identify' || command === 'shopify-products';
+  const noArguments = command === 'shopify-auth' || command === 'shopify-identify' || command === 'shopify-products' || command === 'shopify-match';
   const count = comparison ? fixture ? 3 : 4 : noArguments ? 0 : 1;
   if (command === 'shopify-adjust' ? args.length > 1 : args.length !== count) throw new WorkerError('CLI_USAGE', 'Wrong number of Shopify arguments. Run worker help for usage.');
   if (command === 'shopify-identify') return identifyShop(shopifyIdentifyConfig(process.env));
@@ -57,6 +76,24 @@ export async function runShopifyCommand(command: string, args: string[], values:
   if (command === 'shopify-auth') return client.verifyShop();
   if (command === 'shopify-adjust') {
     return args[0] ? summarizeAdjustProduct(await client.product(args[0])) : discoverAdjustProducts(client);
+  }
+  if (command === 'shopify-match') {
+    const confirmations = values.confirmations === undefined ? [] : parseOwnerConfirmations(
+      readJson(requiredText(values.confirmations, 'Owner confirmations path'), 'owner confirmations'),
+    );
+    const [sheet, scan] = await Promise.all([readMatchingSheet(values), readAdjustProducts(client)]);
+    const products = new Map(scan.products.map(product => [product.id, product]));
+    const confirmedIds = new Set(confirmations.filter(confirmation => confirmation.shopId === config.shopId)
+      .map(confirmation => confirmation.productId));
+    for (const id of confirmedIds) {
+      if (products.has(id) || sheet.kind !== 'live') continue;
+      try {
+        products.set(id, await client.product(id));
+      } catch (error) {
+        if (!(error instanceof WorkerError) || error.code !== 'SHOPIFY_PRODUCT_NOT_FOUND') throw error;
+      }
+    }
+    return matchShopifyProducts(config.shopId, sheet, [...products.values()], confirmations);
   }
   if (command === 'shopify-hextom-verify') {
     const base = values['verified-base-sku'];

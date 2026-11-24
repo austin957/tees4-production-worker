@@ -71,3 +71,7 @@ The [Shopify read-only guide](docs/shopify-readonly.md) covers authorizing the d
 ## Phase 9 source SKU reconciliation
 
 Use [source SKU reconciliation](docs/shopify-reconciliation.md) to compare independently reviewed source evidence and Master Input rows against a known Shopify product. The command only reports possible bindings for owner review.
+
+## Phase 10 product matching
+
+Use the [product matching guide](docs/shopify-product-matching.md) to rank Shopify candidates against Master Input and produce binding proposals for owner review.

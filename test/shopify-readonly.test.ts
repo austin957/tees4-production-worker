@@ -29,7 +29,7 @@ const variant = (n: number, sku: string | null = '000710', size = 'M', color = '
   selectedOptions: [{ name: 'Size', value: size }, { name: 'Color', value: color }],
 });
 const product = (nodes: unknown[], endCursor: string | null = null) => ({
-  id, title: 'Fixture Product', handle: 'fixture-product', status: 'ACTIVE', vendor: 'Fixture Vendor',
+  id, title: 'Fixture Product', handle: 'fixture-product', status: 'ACTIVE', vendor: 'Fixture Vendor', productType: 'Tee',
   publishedAt: '2026-10-05T12:00:00Z', tags: [],
   createdAt: '2026-10-03T12:00:00Z', updatedAt: '2026-11-24T12:00:00Z',
   options: [{ id: 'fixture-option', name: 'Color', position: 1, optionValues: [{ name: 'White' }, { name: 'Black' }] }],
@@ -221,6 +221,10 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
   assert.equal(run('shopify-product', id).id, id);
   assert.equal(run('shopify-variants', id).variants.length, 2);
   assert.equal(run('shopify-adjust').count, 0);
+  const matching = run('shopify-match', '--sheet-fixture', 'examples/matching-sheet-fixture.json');
+  assert.equal(matching.status, 'CANDIDATE_REPORT');
+  assert.equal(matching.masterInput.authoritative, false);
+  assert.equal(matching.discoveredCount, 0);
   assert.equal(run('shopify-adjust', id).hasAdjustTag, false);
   const reconciliation = run('shopify-reconcile', id, '--product-sku', '000710', '--artwork-sku', '00042',
     '--evidence-ref', 'observed-sku-only', '--row', '2', '--sheet-fixture', 'examples/reconciliation-sheet-fixture.json');

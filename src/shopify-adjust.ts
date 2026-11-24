@@ -64,10 +64,9 @@ export function summarizeAdjustProduct(product: ProductRead) {
   };
 }
 
-export async function discoverAdjustProducts(client: Pick<ShopifyReadonlyClient, 'adjustCandidates' | 'product'>) {
-  const products: ReturnType<typeof summarizeAdjustProduct>[] = [];
+export async function readAdjustProducts(client: Pick<ShopifyReadonlyClient, 'adjustCandidates' | 'product'>) {
+  const products: ProductRead[] = [];
   const withoutExactTag: TaggedProduct[] = [];
-  const countsByPattern: Record<SkuPattern, number> = { uniform: 0, distinct: 0, blank_or_partial_blank: 0, anomalous: 0 };
   for (const candidate of await client.adjustCandidates()) {
     // The Shopify search can return case variants. Inspect the stored tags before loading variants.
     if (!hasAdjustTag(candidate)) {
@@ -75,13 +74,16 @@ export async function discoverAdjustProducts(client: Pick<ShopifyReadonlyClient,
       continue;
     }
     const product = await client.product(candidate.id);
-    const report = summarizeAdjustProduct(product);
-    if (report.hasAdjustTag) {
-      products.push(report);
-      countsByPattern[report.sku.pattern] += 1;
-    } else {
-      withoutExactTag.push({ id: product.id, title: product.title, status: product.status, tags: product.tags });
-    }
+    if (hasAdjustTag(product)) products.push(product);
+    else withoutExactTag.push({ id: product.id, title: product.title, status: product.status, tags: product.tags });
   }
+  return { products, withoutExactTag };
+}
+
+export async function discoverAdjustProducts(client: Pick<ShopifyReadonlyClient, 'adjustCandidates' | 'product'>) {
+  const { products: tagged, withoutExactTag } = await readAdjustProducts(client);
+  const products = tagged.map(summarizeAdjustProduct);
+  const countsByPattern: Record<SkuPattern, number> = { uniform: 0, distinct: 0, blank_or_partial_blank: 0, anomalous: 0 };
+  for (const report of products) countsByPattern[report.sku.pattern] += 1;
   return { tag: adjustTag, count: products.length, countsByPattern, products, withoutExactTag };
 }

@@ -12,7 +12,7 @@ const variant = (id: number, sku: string | null, color = 'Dark-Blue', size = '5X
 function product(variants: ProductVariantRead[], tags = ['adjust']): ProductRead {
   return {
     id: 'gid://shopify/Product/2', title: 'Fixture', status: 'ACTIVE', tags,
-    handle: 'fixture', vendor: 'Fixture Vendor', publishedAt: null,
+    handle: 'fixture', vendor: 'Fixture Vendor', productType: 'Tee', publishedAt: null,
     createdAt: '2026-11-24T12:00:00Z', updatedAt: '2026-11-24T12:00:00Z',
     options: [
       { id: 'fixture-size', name: 'Size', position: 2, values: ['5X-Large', 'Small'] },

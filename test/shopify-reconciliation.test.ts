@@ -13,7 +13,7 @@ const request = {
 };
 const product: ProductRead = {
   id: request.productId, title: 'Fixture', status: 'ACTIVE', tags: ['adjust'],
-  handle: 'fixture', vendor: 'Fixture Vendor', publishedAt: null,
+  handle: 'fixture', vendor: 'Fixture Vendor', productType: 'Tee', publishedAt: null,
   createdAt: '2026-11-24T12:00:00Z', updatedAt: '2026-11-24T12:00:00Z',
   options: [
     { id: 'fixture-color', position: 1, name: 'Color', values: ['White', 'Black'] },

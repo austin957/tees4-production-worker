@@ -65,7 +65,7 @@ const adjustCandidatesQuery = `query Tees4ReadAdjustCandidates($first: Int!, $af
 
 const productQuery = `query Tees4ReadProduct($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {
-    id title handle status vendor publishedAt tags createdAt updatedAt
+    id title handle status vendor productType publishedAt tags createdAt updatedAt
     options { id name position optionValues { name } }
     variants(first: $first, after: $after) {
       nodes { id sku selectedOptions { name value } }
@@ -102,6 +102,7 @@ export interface ProductVariantRead {
 export interface ProductRead extends TaggedProduct {
   handle: string;
   vendor: string;
+  productType: string;
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -388,6 +389,7 @@ export class ShopifyReadonlyClient {
       }
       result ??= {
         id, title: string(product.title), handle: string(product.handle), vendor: string(product.vendor),
+        productType: string(product.productType),
         status: string(product.status), publishedAt: nullableString(product.publishedAt), tags: array(product.tags).map(string),
         createdAt: string(product.createdAt), updatedAt,
         options: array(product.options).map(value => {

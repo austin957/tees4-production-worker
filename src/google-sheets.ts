@@ -122,19 +122,45 @@ export interface MasterInputSkuRow {
   artworkSku: string | null;
 }
 
+function displayedText(value: unknown): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') {
+    throw new WorkerError('INVALID_SHEET_ROW', 'Master Input text cells must be returned as exact displayed strings.');
+  }
+  return value;
+}
+
 export async function readMasterInputSkuRows(headerRow: number, readValues = authenticatedReader()): Promise<MasterInputSkuRow[]> {
   const rows = await readSheetRows(masterInput, 'H', 'K', headerRow,
     [['H', mappedHeaders.H], ['K', mappedHeaders.K]], readValues);
-  const sku = (value: unknown): string | null => {
-    if (value === undefined || value === null || value === '') return null;
-    if (typeof value !== 'string') {
-      throw new WorkerError('INVALID_SHEET_ROW', 'Master Input SKU cells must be returned as exact displayed strings.');
-    }
-    return value;
-  };
   return rows.map(({ rowNumber, cells }) => {
     if (!Array.isArray(cells)) throw new WorkerError('INVALID_SHEET_ROW', 'Sheets returned a data row with invalid cells.');
-    return { rowNumber, productSku: sku(cells[0]), artworkSku: sku(cells[3]) };
+    return { rowNumber, productSku: displayedText(cells[0]), artworkSku: displayedText(cells[3]) };
+  });
+}
+
+export interface MasterInputMatchRow extends MasterInputSkuRow {
+  title: string | null;
+  vendor: string | null;
+  garment: string | null;
+  colors: string | null;
+  tags: string | null;
+  completion: string | null;
+}
+
+export async function readMasterInputMatchRows(headerRow: number, readValues = authenticatedReader()): Promise<MasterInputMatchRow[]> {
+  const rows = await readSheetRows(masterInput, 'B', 'K', headerRow, [
+    ['B', mappedHeaders.B], ['D', mappedHeaders.D], ['E', mappedHeaders.E], ['F', mappedHeaders.F],
+    ['G', mappedHeaders.G], ['H', mappedHeaders.H], ['I', 'Tees-4 Completed'], ['K', mappedHeaders.K],
+  ], readValues);
+  return rows.flatMap(({ rowNumber, cells }) => {
+    if (!Array.isArray(cells)) throw new WorkerError('INVALID_SHEET_ROW', 'Sheets returned a data row with invalid cells.');
+    const row = {
+      rowNumber, title: displayedText(cells[0]), vendor: displayedText(cells[2]), garment: displayedText(cells[3]),
+      colors: displayedText(cells[4]), tags: displayedText(cells[5]), productSku: displayedText(cells[6]),
+      completion: displayedText(cells[7]), artworkSku: displayedText(cells[9]),
+    };
+    return Object.values(row).some(value => typeof value === 'string') ? [row] : [];
   });
 }
 
