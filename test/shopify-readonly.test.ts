@@ -7,7 +7,7 @@ import test from 'node:test';
 import { readJson } from '../src/config.js';
 import { readProductionArtwork, simulatedSheets } from '../src/sheets.js';
 import { compareShopifyProduct, selectShopifyBinding, shopifyAssignment } from '../src/shopify-comparison.js';
-import { shopifyReadConfig, ShopifyReadonlyClient } from '../src/shopify-readonly.js';
+import { identifyShop, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from '../src/shopify-readonly.js';
 import type { ProductRead } from '../src/shopify-readonly.js';
 
 const env = {
@@ -203,10 +203,13 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
         { product: ${JSON.stringify(product([variant(3, null), variant(4, '000710', 'L', 'Black')]))} };
       return Response.json({ data }, { headers: { 'X-Shopify-API-Version': '2026-10' } });
     };`);
-  const run = (...args: string[]) => {
-    const result = spawnSync(process.execPath, [
+  const cli = (shopId: string, ...args: string[]) => spawnSync(process.execPath, [
       '--disable-warning=ExperimentalWarning', '--import', preload, 'dist/src/cli.js', ...args,
-    ], { encoding: 'utf8', env: { ...process.env, ...env, TEES4_DATABASE: database } });
+    ], { encoding: 'utf8', env: {
+      ...process.env, ...env, TEES4_SHOPIFY_SHOP_ID: shopId, TEES4_DATABASE: database,
+    } });
+  const run = (...args: string[]) => {
+    const result = cli(config.shopId, ...args);
     assert.equal(result.status, 0, result.stderr);
     return JSON.parse(result.stdout);
   };
@@ -216,5 +219,99 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
   const compare = ['examples/shopify-readonly-bindings.json', '2', 'examples/sheet-input.json', '--fixture'];
   assert.equal(run('shopify-compare', ...compare).status, 'sku_assignment_required');
   assert.equal(run('shopify-preview', ...compare).proposedAssignments.length, 1);
+  const bootstrap = cli('', 'shopify-identify');
+  assert.equal(bootstrap.status, 0, bootstrap.stderr);
+  assert.deepEqual(JSON.parse(bootstrap.stdout), {
+    id: config.shopId, domain: config.domain, apiVersion: config.version, scopes: ['read_products'],
+  });
+  assert.doesNotMatch(bootstrap.stdout, /fixture-secret|fixture-token/);
+  for (const args of [['shopify-auth'], ['shopify-product', id]]) {
+    const strict = cli('', ...args);
+    assert.equal(strict.status, 1);
+    assert.match(strict.stderr, /INVALID_SHOPIFY_ID/);
+  }
   assert.equal(existsSync(database), false);
+});
+
+test('bootstrap uses only the identity query and fails closed on mismatched domain, GID, scope or version', async () => {
+  const { TEES4_SHOPIFY_SHOP_ID: _, ...bootstrapEnv } = env;
+  const bootstrap = shopifyIdentifyConfig(bootstrapEnv);
+  assert.throws(() => shopifyReadConfig(bootstrapEnv), { code: 'INVALID_SHOPIFY_ID' });
+  const authenticate = (identityResponse: Response) => {
+    const fetcher: typeof fetch = async (url, init) => {
+      const request = new Request(url, init);
+      assert.equal(new URL(request.url).hostname, config.domain);
+      if (new URL(request.url).pathname === '/admin/oauth/access_token') return response(grant);
+      const body = await request.json();
+      assert.match(body.query, /^query Tees4ReadIdentity/);
+      assert.doesNotMatch(body.query, /product\s*\(/);
+      return identityResponse;
+    };
+    return identifyShop(bootstrap, fetcher);
+  };
+  assert.deepEqual(await authenticate(response({ data: identity })), {
+    id: config.shopId, domain: config.domain, apiVersion: config.version, scopes: ['read_products'],
+  });
+  await assert.rejects(authenticate(response({ data: { ...identity, shop: {
+    ...identity.shop, myshopifyDomain: 'different.myshopify.com',
+  } } })), { code: 'SHOPIFY_SHOP_MISMATCH' });
+  await assert.rejects(authenticate(response({ data: { ...identity, shop: {
+    ...identity.shop, id: 'gid://shopify/Product/1',
+  } } })), { code: 'INVALID_SHOPIFY_ID' });
+  await assert.rejects(authenticate(response({ data: { ...identity, currentAppInstallation: {
+    accessScopes: [{ handle: 'read_products' }, { handle: 'write_products' }],
+  } } })), { code: 'SHOPIFY_PERMISSION' });
+  await assert.rejects(authenticate(response({ data: identity }, 200, { 'X-Shopify-API-Version': '2026-07' })), {
+    code: 'SHOPIFY_VERSION',
+  });
+});
+
+test('product discovery uses authenticated read-only pages and returns at most five products', async () => {
+  const summary = (n: number) => ({ id: `gid://shopify/Product/${n}`, title: `Product ${n}` });
+  const page = (nodes: ReturnType<typeof summary>[], cursor: string | null) => response({ data: {
+    products: { nodes, pageInfo: { hasNextPage: cursor !== null, endCursor: cursor } },
+  } });
+  const { client, calls } = mocked([
+    response(grant), response({ data: identity }),
+    page([summary(1), summary(2)], 'cursor-1'),
+    page([summary(3), summary(4), summary(5)], 'cursor-2'),
+  ]);
+  assert.deepEqual(await client.recentProducts(), [1, 2, 3, 4, 5].map(summary));
+  assert.equal(calls.length, 4);
+  const [first, second] = await Promise.all(calls.slice(2).map(call => call.json()));
+  assert.match(first.query, /^query Tees4ReadProducts/);
+  assert.match(first.query, /sortKey: CREATED_AT, reverse: true/);
+  assert.deepEqual(first.variables, { first: 5, after: null });
+  assert.deepEqual(second.variables, { first: 3, after: 'cursor-1' });
+
+  const repeated = mocked([response(grant), response({ data: identity }), page([], 'same'), page([], 'same')]);
+  await assert.rejects(repeated.client.recentProducts(), { code: 'SHOPIFY_PAGINATION' });
+  const emptyPages = mocked([response(grant), response({ data: identity }),
+    ...Array.from({ length: 5 }, (_, i) => page([], `cursor-${i}`)),
+  ]);
+  assert.deepEqual(await emptyPages.client.recentProducts(), []);
+  assert.equal(emptyPages.calls.length, 7);
+  const short = mocked([response(grant), response({ data: identity }), page([summary(1)], null)]);
+  assert.deepEqual(await short.client.recentProducts(), [summary(1)]);
+  const denied = mocked([response(grant), response({ data: { ...identity, shop: { ...identity.shop, id: 'gid://shopify/Shop/99' } } })]);
+  await assert.rejects(denied.client.recentProducts(), { code: 'SHOPIFY_SHOP_MISMATCH' });
+  assert.equal(denied.calls.length, 2);
+});
+
+test('provenance reads only the requested product and never fetches metafield values', async () => {
+  const { client, calls } = mocked([response(grant), response({ data: identity }), response({ data: {
+    product: {
+      id, tags: ['fixture-tag'], createdAt: '2026-11-24T00:00:00Z',
+      metafields: { nodes: [{ namespace: 'custom', key: 'origin', value: 'not part of the report' }],
+        pageInfo: { hasNextPage: true } },
+    },
+  } })]);
+  assert.deepEqual(await client.productProvenance(id), {
+    id, tags: ['fixture-tag'], createdAt: '2026-11-24T00:00:00Z', moreVisibleMetafields: true,
+    visibleMetafields: [{ namespace: 'custom', key: 'origin' }],
+  });
+  const request = await calls[2]!.json();
+  assert.match(request.query, /^query Tees4ReadProvenance/);
+  assert.doesNotMatch(request.query, /\bvalue\b|\bmutation\b/);
+  assert.deepEqual(request.variables, { id });
 });

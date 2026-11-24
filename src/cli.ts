@@ -28,7 +28,10 @@ const help = `Tees-4 Production Worker
   approve <job-id> <stage-id> --by <approver>
   effects
   shopify-auth
+  shopify-identify
+  shopify-products
   shopify-product <shopify-product-gid>
+  shopify-provenance <shopify-product-gid>
   shopify-variants <shopify-product-gid>
   shopify-compare <bindings.json> <row> <artwork-selection.json> <policy.json>
   shopify-preview <bindings.json> <row> <artwork-selection.json> <policy.json>

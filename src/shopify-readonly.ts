@@ -3,15 +3,19 @@ import { WorkerError } from './model.js';
 
 const targetVersion = '2026-10';
 const pageSize = 100;
+const discoveryLimit = 5;
 const attempts = 4;
 const maxDelayMs = 30_000;
 
-export interface ShopifyReadConfig {
+interface ShopifyConnectionConfig {
   domain: string;
-  shopId: string;
   version: string;
   clientId: string;
   clientSecret: string;
+}
+
+export interface ShopifyReadConfig extends ShopifyConnectionConfig {
+  shopId: string;
 }
 
 export function shopifyGid(value: unknown, kind: 'Shop' | 'Product' | 'ProductVariant'): string {
@@ -21,7 +25,7 @@ export function shopifyGid(value: unknown, kind: 'Shop' | 'Product' | 'ProductVa
   return value;
 }
 
-export function shopifyReadConfig(env: NodeJS.ProcessEnv): ShopifyReadConfig {
+export function shopifyIdentifyConfig(env: NodeJS.ProcessEnv): ShopifyConnectionConfig {
   const domain = requiredText(env.TEES4_SHOPIFY_DOMAIN, 'TEES4_SHOPIFY_DOMAIN');
   const version = env.TEES4_SHOPIFY_API_VERSION ?? targetVersion;
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.myshopify\.com$/.test(domain) || !/^20\d{2}-(01|04|07|10)$/.test(version)) {
@@ -29,15 +33,25 @@ export function shopifyReadConfig(env: NodeJS.ProcessEnv): ShopifyReadConfig {
   }
   return {
     domain, version,
-    shopId: shopifyGid(env.TEES4_SHOPIFY_SHOP_ID, 'Shop'),
     clientId: requiredText(env.TEES4_SHOPIFY_CLIENT_ID, 'TEES4_SHOPIFY_CLIENT_ID'),
     clientSecret: requiredText(env.TEES4_SHOPIFY_CLIENT_SECRET, 'TEES4_SHOPIFY_CLIENT_SECRET'),
   };
 }
 
+export function shopifyReadConfig(env: NodeJS.ProcessEnv): ShopifyReadConfig {
+  return { ...shopifyIdentifyConfig(env), shopId: shopifyGid(env.TEES4_SHOPIFY_SHOP_ID, 'Shop') };
+}
+
 const shopQuery = `query Tees4ReadIdentity {
   shop { id myshopifyDomain }
   currentAppInstallation { accessScopes { handle } }
+}`;
+
+const productsQuery = `query Tees4ReadProducts($first: Int!, $after: String) {
+  products(first: $first, after: $after, sortKey: CREATED_AT, reverse: true) {
+    nodes { id title }
+    pageInfo { hasNextPage endCursor }
+  }
 }`;
 
 const productQuery = `query Tees4ReadProduct($id: ID!, $first: Int!, $after: String) {
@@ -51,6 +65,21 @@ const productQuery = `query Tees4ReadProduct($id: ID!, $first: Int!, $after: Str
   }
 }`;
 
+const provenanceQuery = `query Tees4ReadProvenance($id: ID!) {
+  product(id: $id) {
+    id
+    createdAt
+    tags
+    metafields(first: 25) {
+      nodes { namespace key }
+      pageInfo { hasNextPage }
+    }
+  }
+}`;
+
+const queries = { identity: shopQuery, products: productsQuery, product: productQuery, provenance: provenanceQuery };
+
+export interface ProductSummary { id: string; title: string }
 export interface ShopIdentity { id: string; domain: string; scopes: string[]; apiVersion: string }
 export interface ProductVariantRead {
   id: string | null;
@@ -105,12 +134,11 @@ function throttleDelay(body: Record<string, unknown>): number {
   return Math.max(0, Math.ceil((cost.requestedQueryCost - limit.currentlyAvailable) * 1000 / limit.restoreRate));
 }
 
-export class ShopifyReadonlyClient {
+class ShopifyReadTransport {
   private grant?: { value: string; expiresAt: number };
-  private verifiedToken: string | undefined;
 
   constructor(
-    private readonly config: ShopifyReadConfig,
+    private readonly config: ShopifyConnectionConfig,
     private readonly fetcher: typeof fetch = fetch,
     private readonly sleep: (milliseconds: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms)),
     private readonly clock: () => number = Date.now,
@@ -176,7 +204,7 @@ export class ShopifyReadonlyClient {
     return invalidResponse();
   }
 
-  private async token(): Promise<string> {
+  async token(): Promise<string> {
     if (this.grant && this.grant.expiresAt - this.clock() > 60_000) return this.grant.value;
     const grant = await this.request(`https://${this.config.domain}/admin/oauth/access_token`, {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -191,20 +219,16 @@ export class ShopifyReadonlyClient {
     return value;
   }
 
-  private query(token: string, operation: 'identity' | 'product', variables: Record<string, unknown>) {
+  query(token: string, operation: keyof typeof queries, variables: Record<string, unknown>) {
     return this.request(`https://${this.config.domain}/admin/api/${this.config.version}/graphql.json`, {
       'Content-Type': 'application/json', 'X-Shopify-Access-Token': token,
-    }, JSON.stringify({ query: operation === 'identity' ? shopQuery : productQuery, variables }), true);
+    }, JSON.stringify({ query: queries[operation], variables }), true);
   }
 
-  async verifyShop(): Promise<ShopIdentity> {
-    return this.verifyToken(await this.token());
-  }
-
-  private async verifyToken(token: string): Promise<ShopIdentity> {
+  async readIdentity(token: string): Promise<ShopIdentity> {
     const data = await this.query(token, 'identity', {});
     const shop = record(data.shop);
-    if (shop.id !== this.config.shopId || shop.myshopifyDomain !== this.config.domain) {
+    if (shop.myshopifyDomain !== this.config.domain) {
       throw new WorkerError('SHOPIFY_SHOP_MISMATCH', 'The authenticated Shopify shop does not match the configured identity.');
     }
     if (data.currentAppInstallation === null) throw new WorkerError('SHOPIFY_PERMISSION', 'No Shopify app installation was returned.');
@@ -212,8 +236,107 @@ export class ShopifyReadonlyClient {
     if (!scopes.includes('read_products') || scopes.some(scope => scope !== 'read_products')) {
       throw new WorkerError('SHOPIFY_PERMISSION', 'Use a dedicated Shopify app installation with only read_products.');
     }
+    const id = shopifyGid(shop.id, 'Shop');
+    return { id, domain: this.config.domain, apiVersion: this.config.version, scopes };
+  }
+}
+
+export async function identifyShop(config: ShopifyConnectionConfig, fetcher?: typeof fetch): Promise<ShopIdentity> {
+  const transport = new ShopifyReadTransport(config, fetcher);
+  return transport.readIdentity(await transport.token());
+}
+
+export class ShopifyReadonlyClient {
+  private readonly transport: ShopifyReadTransport;
+  private readonly shopId: string;
+  private verifiedToken: string | undefined;
+
+  constructor(
+    config: ShopifyReadConfig,
+    fetcher?: typeof fetch,
+    sleep?: (milliseconds: number) => Promise<void>,
+    clock?: () => number,
+  ) {
+    this.shopId = shopifyGid(config.shopId, 'Shop');
+    this.transport = new ShopifyReadTransport(config, fetcher, sleep, clock);
+  }
+
+  async verifyShop(): Promise<ShopIdentity> {
+    return this.verifyToken(await this.transport.token());
+  }
+
+  private async verifyToken(token: string): Promise<ShopIdentity> {
+    this.verifiedToken = undefined;
+    const identity = await this.transport.readIdentity(token);
+    if (identity.id !== this.shopId) {
+      throw new WorkerError('SHOPIFY_SHOP_MISMATCH', 'The authenticated Shopify shop does not match the configured identity.');
+    }
     this.verifiedToken = token;
-    return { id: this.config.shopId, domain: this.config.domain, apiVersion: this.config.version, scopes };
+    return identity;
+  }
+
+  private async verifiedQuery(operation: Exclude<keyof typeof queries, 'identity'>, variables: Record<string, unknown>) {
+    const token = await this.transport.token();
+    if (this.verifiedToken !== token) await this.verifyToken(token);
+    return this.transport.query(token, operation, variables);
+  }
+
+  async recentProducts(): Promise<ProductSummary[]> {
+    const products: ProductSummary[] = [];
+    const cursors = new Set<string>();
+    const ids = new Set<string>();
+    let after: string | null = null;
+    for (let page = 0; page < discoveryLimit && products.length < discoveryLimit; page += 1) {
+      const first = discoveryLimit - products.length;
+      const data = await this.verifiedQuery('products', { first, after });
+      const connection = record(data.products);
+      const nodes = array(connection.nodes);
+      if (nodes.length > first) return invalidResponse();
+      for (const value of nodes) {
+        const node = record(value);
+        const id = shopifyGid(node.id, 'Product');
+        if (ids.has(id)) continue;
+        ids.add(id);
+        products.push({ id, title: string(node.title) });
+      }
+      if (products.length === discoveryLimit) break;
+      const next = record(connection.pageInfo);
+      if (next.hasNextPage === false) break;
+      if (next.hasNextPage !== true || typeof next.endCursor !== 'string' || !next.endCursor || cursors.has(next.endCursor)) {
+        throw new WorkerError('SHOPIFY_PAGINATION', 'Shopify returned an invalid or repeated product pagination cursor.');
+      }
+      cursors.add(next.endCursor);
+      after = next.endCursor;
+    }
+    return products;
+  }
+
+  async productProvenance(id: string) {
+    shopifyGid(id, 'Product');
+    const data = await this.verifiedQuery('provenance', { id });
+    const product = this.productRecord(data, id);
+    const fields = record(product.metafields);
+    const page = record(fields.pageInfo);
+    if (typeof page.hasNextPage !== 'boolean') return invalidResponse();
+    return {
+      id,
+      createdAt: string(product.createdAt),
+      tags: array(product.tags).map(string),
+      visibleMetafields: array(fields.nodes).map(value => {
+        const field = record(value);
+        return { namespace: string(field.namespace), key: string(field.key) };
+      }),
+      moreVisibleMetafields: page.hasNextPage,
+    };
+  }
+
+  private productRecord(data: Record<string, unknown>, id: string) {
+    if (data.product === null) {
+      throw new WorkerError('SHOPIFY_PRODUCT_NOT_FOUND', 'The Shopify product was not found or is inaccessible to this installation.');
+    }
+    const product = record(data.product);
+    if (product.id !== id) throw new WorkerError('SHOPIFY_PRODUCT_MISMATCH', 'Shopify returned a different product ID.');
+    return product;
   }
 
   async product(id: string): Promise<ProductRead> {
@@ -222,14 +345,8 @@ export class ShopifyReadonlyClient {
     let after: string | null = null;
     const cursors = new Set<string>();
     for (;;) {
-      const token = await this.token();
-      if (this.verifiedToken !== token) await this.verifyToken(token);
-      const data = await this.query(token, 'product', { id, first: pageSize, after });
-      if (data.product === null) {
-        throw new WorkerError('SHOPIFY_PRODUCT_NOT_FOUND', 'The Shopify product was not found or is inaccessible to this installation.');
-      }
-      const product = record(data.product);
-      if (product.id !== id) throw new WorkerError('SHOPIFY_PRODUCT_MISMATCH', 'Shopify returned a different product ID.');
+      const data = await this.verifiedQuery('product', { id, first: pageSize, after });
+      const product = this.productRecord(data, id);
       result ??= {
         id, title: string(product.title), handle: string(product.handle), vendor: string(product.vendor),
         status: string(product.status), publishedAt: nullableString(product.publishedAt),

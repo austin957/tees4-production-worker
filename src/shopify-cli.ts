@@ -3,11 +3,14 @@ import { googleSheets, parseSheetPolicy, previewSheetArtwork } from './google-sh
 import { WorkerError } from './model.js';
 import { readProductionArtwork, simulatedSheets } from './sheets.js';
 import { compareShopifyProduct, selectShopifyBinding, shopifyAssignment } from './shopify-comparison.js';
-import { shopifyReadConfig, ShopifyReadonlyClient } from './shopify-readonly.js';
+import { identifyShop, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from './shopify-readonly.js';
 
 export const shopifyCommands = {
   'shopify-auth': {},
+  'shopify-identify': {},
   'shopify-product': {},
+  'shopify-products': {},
+  'shopify-provenance': {},
   'shopify-variants': {},
   'shopify-preview': { fixture: { type: 'boolean' } },
   'shopify-compare': { fixture: { type: 'boolean' } },
@@ -15,11 +18,15 @@ export const shopifyCommands = {
 
 export async function runShopifyCommand(command: string, args: string[], fixture: boolean) {
   const comparison = command === 'shopify-preview' || command === 'shopify-compare';
-  const count = comparison ? fixture ? 3 : 4 : command === 'shopify-auth' ? 0 : 1;
+  const noArguments = command === 'shopify-auth' || command === 'shopify-identify' || command === 'shopify-products';
+  const count = comparison ? fixture ? 3 : 4 : noArguments ? 0 : 1;
   if (args.length !== count) throw new WorkerError('CLI_USAGE', 'Wrong number of Shopify arguments. Run worker help for usage.');
+  if (command === 'shopify-identify') return identifyShop(shopifyIdentifyConfig(process.env));
   const config = shopifyReadConfig(process.env);
   const client = new ShopifyReadonlyClient(config);
   if (command === 'shopify-auth') return client.verifyShop();
+  if (command === 'shopify-products') return client.recentProducts();
+  if (command === 'shopify-provenance') return client.productProvenance(args[0]!);
   if (!comparison) {
     const product = await client.product(args[0]!);
     return command === 'shopify-variants' ? { productId: product.id, variants: product.variants } : product;
