@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { readJson } from '../src/config.js';
 import { readProductionArtwork, simulatedSheets } from '../src/sheets.js';
-import { discoverAdjustProducts } from '../src/shopify-adjust.js';
+import { discoverAdjustProducts, summarizeAdjustProduct } from '../src/shopify-adjust.js';
 import { compareShopifyProduct, selectShopifyBinding, shopifyAssignment } from '../src/shopify-comparison.js';
 import { identifyShop, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from '../src/shopify-readonly.js';
 import type { ProductRead } from '../src/shopify-readonly.js';
@@ -31,6 +31,7 @@ const variant = (n: number, sku: string | null = '000710', size = 'M', color = '
 const product = (nodes: unknown[], endCursor: string | null = null) => ({
   id, title: 'Fixture Product', handle: 'fixture-product', status: 'ACTIVE', vendor: 'Fixture Vendor',
   publishedAt: '2026-10-05T12:00:00Z', tags: [],
+  createdAt: '2026-10-03T12:00:00Z', updatedAt: '2026-11-24T12:00:00Z',
   options: [{ id: 'fixture-option', name: 'Color', optionValues: [{ name: 'White' }, { name: 'Black' }] }],
   variants: { nodes, pageInfo: { hasNextPage: endCursor !== null, endCursor } },
 });
@@ -321,7 +322,7 @@ test('provenance reads only the requested product and never fetches metafield va
   assert.deepEqual(request.variables, { id });
 });
 
-test('ADJUST discovery pages by tag filter, confirms exact spelling and rechecks candidates on load', async () => {
+test('adjust discovery pages by tag filter, confirms exact spelling and rechecks candidates on load', async () => {
   const otherId = 'gid://shopify/Product/3';
   const removedId = 'gid://shopify/Product/4';
   const candidate = (productId: string, tags: string[]) => ({ id: productId, title: 'Fixture', status: 'ACTIVE', tags });
@@ -330,35 +331,65 @@ test('ADJUST discovery pages by tag filter, confirms exact spelling and rechecks
   } });
   const { client, calls } = mocked([
     response(grant), response({ data: identity }),
-    page([candidate(otherId, ['adjust']), candidate(id, ['ADJUST'])], 'page-2'),
-    page([candidate(removedId, ['ADJUST'])], null),
-    response({ data: { product: { ...product([variant(3), variant(4, null)], 'variant-page-2'), tags: ['ADJUST'] } } }),
-    response({ data: { product: { ...product([variant(5, 'another-sku'), variant(3, '000710')]), tags: ['ADJUST'] } } }),
-    response({ data: { product: { ...product([variant(6)]), id: removedId, tags: ['adjust'] } } }),
+    page([candidate(otherId, ['ADJUST']), candidate(id, ['adjust'])], 'page-2'),
+    page([candidate(removedId, ['adjust'])], null),
+    response({ data: { product: { ...product([variant(3), variant(4, null)], 'variant-page-2'), tags: ['adjust'] } } }),
+    response({ data: { product: { ...product([variant(5, 'another-sku'), variant(3, '000710')]), tags: ['adjust'] } } }),
+    response({ data: { product: { ...product([variant(6)]), id: removedId, tags: ['Adjust'] } } }),
   ]);
   const discovered = await discoverAdjustProducts(client);
   assert.equal(discovered.count, 1);
-  assert.deepEqual(discovered.withoutExactTag.map(row => row.id), [otherId, removedId]);
+  assert.deepEqual(discovered.countsByPattern, { uniform: 0, distinct: 0, blank_or_partial_blank: 0, anomalous: 1 });
+  assert.deepEqual(discovered.withoutExactTag.map(row => [row.id, row.tags]), [[otherId, ['ADJUST']], [removedId, ['Adjust']]]);
+  assert.deepEqual(discovered.products[0]?.tags, ['adjust']);
+  assert.equal(discovered.products[0]?.createdAt, '2026-10-03T12:00:00Z');
+  assert.equal(discovered.products[0]?.updatedAt, '2026-11-24T12:00:00Z');
+  assert.equal(discovered.products[0]?.options[0]?.name, 'Color');
   assert.equal(discovered.products[0]?.variantCount, 4);
   assert.deepEqual(discovered.products[0]?.sku, {
-    status: 'incomplete_and_conflicting',
-    blankSkuCount: 1, whitespaceSkuCount: 0, missingVariantIdCount: 0,
-    duplicateVariantIds: [variant(3).id],
+    pattern: 'anomalous',
+    blankSkuCount: 1, whitespaceSkuCount: 0, paddedSkuCount: 0, missingVariantIdCount: 0,
+    duplicateVariantIds: [variant(3).id], anomalies: ['duplicate_variant_ids', 'mixed_repeated_skus'],
     values: [{ value: '000710', variantCount: 2 }, { value: 'another-sku', variantCount: 1 }],
   });
   const queries = await Promise.all(calls.slice(2).map(call => call.json()));
   assert.match(queries[0].query, /^query Tees4ReadAdjustCandidates/);
   assert.match(queries[0].query, /query: \$search/);
-  assert.deepEqual(queries[0].variables, { first: 100, after: null, search: 'tag:ADJUST' });
-  assert.deepEqual(queries[1].variables, { first: 100, after: 'page-2', search: 'tag:ADJUST' });
+  assert.deepEqual(queries[0].variables, { first: 100, after: null, search: 'tag:adjust' });
+  assert.deepEqual(queries[1].variables, { first: 100, after: 'page-2', search: 'tag:adjust' });
   assert.deepEqual(queries.slice(2).map(query => query.variables.id), [id, id, removedId]);
   assert.ok(queries.every(query => /^query Tees4Read/.test(query.query)));
 });
 
-test('ADJUST discovery refuses an incomplete count when a cursor repeats', async () => {
+test('adjust discovery refuses an incomplete count when a cursor repeats', async () => {
   const page = () => response({ data: {
     products: { nodes: [], pageInfo: { hasNextPage: true, endCursor: 'same' } },
   } });
   const { client } = mocked([response(grant), response({ data: identity }), page(), page()]);
   await assert.rejects(discoverAdjustProducts(client), { code: 'SHOPIFY_PAGINATION' });
+});
+
+
+test('exact lowercase tag audits classify SKU patterns without normalizing strings or claiming completion', async () => {
+  const cases = [
+    { skus: ['000710', '000710'], pattern: 'uniform', candidate: 'possible_pre_hextom' },
+    { skus: ['000710', '000711'], pattern: 'distinct', candidate: 'possible_post_hextom' },
+    { skus: ['000710', ' 000710 '], pattern: 'anomalous', candidate: 'undetermined' },
+    { skus: [null, '', '000710'], pattern: 'blank_or_partial_blank', candidate: 'undetermined' },
+    { skus: [null, ''], pattern: 'blank_or_partial_blank', candidate: 'undetermined' },
+    { skus: [' '], pattern: 'anomalous', candidate: 'undetermined' },
+    { skus: ['000710', '000710', 'another'], pattern: 'anomalous', candidate: 'undetermined' },
+    { skus: [], pattern: 'anomalous', candidate: 'undetermined' },
+  ];
+  for (const { skus, pattern, candidate } of cases) {
+    const { client } = mocked([
+      response(grant), response({ data: identity }),
+      response({ data: { product: { ...product(skus.map((sku, n) => variant(n + 3, sku))), tags: ['adjust', 'KeepAsIs'] } } }),
+    ]);
+    const report = summarizeAdjustProduct(await client.product(id));
+    assert.equal(report.sku.pattern, pattern);
+    assert.equal(report.hextomCandidate, candidate);
+    assert.deepEqual(report.tags, ['adjust', 'KeepAsIs']);
+    assert.deepEqual(report.sku.values.map(entry => entry.value), [...new Set(skus.filter(sku => sku !== '' && sku !== null))]);
+  }
 });

@@ -5,6 +5,7 @@ const targetVersion = '2026-10';
 const pageSize = 100;
 const discoveryLimit = 5;
 const maxTagPages = 250;
+export const adjustTag = 'adjust';
 const attempts = 4;
 const maxDelayMs = 30_000;
 
@@ -64,7 +65,7 @@ const adjustCandidatesQuery = `query Tees4ReadAdjustCandidates($first: Int!, $af
 
 const productQuery = `query Tees4ReadProduct($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {
-    id title handle status vendor publishedAt tags
+    id title handle status vendor publishedAt tags createdAt updatedAt
     options { id name optionValues { name } }
     variants(first: $first, after: $after) {
       nodes { id sku selectedOptions { name value } }
@@ -102,6 +103,8 @@ export interface ProductRead extends TaggedProduct {
   handle: string;
   vendor: string;
   publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
   options: { id: string; name: string; values: string[] }[];
   variants: ProductVariantRead[];
 }
@@ -325,7 +328,7 @@ export class ShopifyReadonlyClient {
     const cursors = new Set<string>();
     let after: string | null = null;
     for (let page = 0; page < maxTagPages; page += 1) {
-      const data = await this.verifiedQuery('adjustCandidates', { first: pageSize, after, search: 'tag:ADJUST' });
+      const data = await this.verifiedQuery('adjustCandidates', { first: pageSize, after, search: `tag:${adjustTag}` });
       const connection = record(data.products);
       for (const value of array(connection.nodes)) {
         const node = record(value);
@@ -335,12 +338,12 @@ export class ShopifyReadonlyClient {
       const next = record(connection.pageInfo);
       if (next.hasNextPage === false) return [...products.values()];
       if (next.hasNextPage !== true || typeof next.endCursor !== 'string' || !next.endCursor || cursors.has(next.endCursor)) {
-        throw new WorkerError('SHOPIFY_PAGINATION', 'Shopify returned an invalid or repeated ADJUST search cursor.');
+        throw new WorkerError('SHOPIFY_PAGINATION', 'Shopify returned an invalid or repeated adjust search cursor.');
       }
       cursors.add(next.endCursor);
       after = next.endCursor;
     }
-    throw new WorkerError('SHOPIFY_PAGINATION', 'The ADJUST search exceeded its page limit. No complete count is available.');
+    throw new WorkerError('SHOPIFY_PAGINATION', 'The adjust search exceeded its page limit. No complete count is available.');
   }
 
   async productProvenance(id: string) {
@@ -382,6 +385,7 @@ export class ShopifyReadonlyClient {
       result ??= {
         id, title: string(product.title), handle: string(product.handle), vendor: string(product.vendor),
         status: string(product.status), publishedAt: nullableString(product.publishedAt), tags: array(product.tags).map(string),
+        createdAt: string(product.createdAt), updatedAt: string(product.updatedAt),
         options: array(product.options).map(value => {
           const option = record(value);
           return { id: string(option.id), name: string(option.name), values: array(option.optionValues).map(item => string(record(item).name)) };

@@ -44,18 +44,27 @@ npm run --silent worker -- shopify-variants gid://shopify/Product/2
 
 `shopify-products` lists up to five recent product GIDs and titles for inspection. It does not match products to sheet rows or create bindings. `shopify-provenance` reads the creation time, tags, and the first 25 metafield names visible to the app, without fetching metafield values. A tag or matching title is not independent evidence of the creating app or the source row. Product output includes the lifecycle status and the Online Store publication timestamp. Those fields do not establish publication to other sales channels. Variant SKU strings come from the product variant query and are preserved exactly. The query does not require extra inventory scopes. Shopify may change a product while pagination is in progress, so treat the output as an inspection of current data rather than a lock on the product. [Shopify Product query reference](https://shopify.dev/docs/api/admin-graphql/2026-10/queries/product)
 
-## Monitor the ADJUST queue
+## Audit the Hextom readiness queue
 
 ```sh
 npm run --silent worker -- shopify-adjust
 npm run --silent worker -- shopify-adjust gid://shopify/Product/10461800792355
 ```
 
-The first command sends Shopify's `tag:ADJUST` product search and pages through the results. Shopify search can also return case variants. The worker confirms the stored tag is exactly `ADJUST`, lists other search results separately, and returns a count only after the search finishes. If Shopify cannot finish pagination within 250 pages or repeats a cursor, the command fails with no complete count. The second command checks one specific GID regardless of its tags. [Shopify products search](https://shopify.dev/docs/api/admin-graphql/2026-10/queries/products)
+The audit queries Shopify with `tag:adjust` and pages through the results. Shopify search can also return case variants. The worker checks the stored tags for the exact lowercase string `adjust`. It reports other search results separately and preserves all tag capitalization. If pagination cannot finish within 250 pages or Shopify repeats a cursor, the command fails without returning a partial count. Give the command a GID to audit one product regardless of its tags. [Shopify products search](https://shopify.dev/docs/api/admin-graphql/2026-10/queries/products)
 
-Each exact match includes the product GID, title, Shopify status, tags, total variants, and the count of each SKU exactly as stored. The worker distinguishes consistent data from blank SKUs, whitespace-only SKUs, duplicate or missing variant IDs, and multiple distinct SKUs. These are observations for review. Uniform or mixed SKUs alone do not establish whether Hextom completed its work. The tag identifies products for monitoring and does not establish a Master Input binding.
+The output groups products into four mutually exclusive patterns and lists each product's GID, status, creation and update timestamps, options, variant count, and counts of exact SKU values.
 
-Run the command again to monitor the queue by GID and compare snapshots. Reads can run during the 4:20–9:10 PM America/Chicago protected window. This command does not modify tags or SKUs, trigger exports, or schedule writes. Because Shopify data can change between reads, the report reflects the observations made during the scan.
+| Pattern | Observation |
+| --- | --- |
+| `uniform` | Every variant has the same populated SKU |
+| `distinct` | Every variant has a different populated SKU |
+| `blank_or_partial_blank` | At least one SKU is null or empty, with no other anomaly |
+| `anomalous` | No variants, missing or repeated variant IDs, SKUs with whitespace alone or around the value, or a mix of repeated and distinct populated SKUs |
+
+Tagged products with multiple variants sharing one SKU are possible pre-Hextom candidates. Tagged products with fully distinct SKUs are possible post-Hextom candidates. These labels describe patterns for review. They do not establish Hextom completion, Mockupify provenance, or a Master Input binding. Shopify's filter and the worker's case check say nothing about Hextom's own case-matching behavior. That requires checking Hextom's actual configured rule.
+
+The audit can run before, during, or after the **4:20–9:10 PM America/Chicago** protected window for exports and initial SKU writes. Compare snapshots by product GID without modifying tags, SKUs, or Hextom settings. Shopify data can change during a scan, so each snapshot reflects the observations made during that run.
 
 ## Compare a binding with Master Input
 
