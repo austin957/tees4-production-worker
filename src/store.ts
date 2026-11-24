@@ -1,0 +1,211 @@
+import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { WorkerError } from './model.js';
+import type { Artwork, Details, Job, Mode, StageResult, Workflow, WriteAction } from './model.js';
+
+interface Claim {
+  job: Job;
+  token: string;
+}
+
+interface Effect {
+  details: Details;
+  reused: boolean;
+}
+
+const identity = (artwork: Artwork, mode: Mode) => JSON.stringify([mode, artwork.artworkId, artwork.sku]);
+
+export class Store {
+  private readonly db: DatabaseSync;
+
+  constructor(path: string) {
+    try {
+      if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+      this.db = new DatabaseSync(path);
+      this.db.exec(`
+        PRAGMA busy_timeout = 5000;
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS jobs (
+          id TEXT PRIMARY KEY,
+          identity TEXT UNIQUE NOT NULL,
+          status TEXT NOT NULL,
+          available_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          claim_token TEXT,
+          lease_until INTEGER,
+          body TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(status, available_at, created_at);
+        CREATE TABLE IF NOT EXISTS effects (
+          key TEXT PRIMARY KEY,
+          action TEXT NOT NULL,
+          request TEXT NOT NULL,
+          details TEXT NOT NULL
+        );
+      `);
+    } catch (error) {
+      throw new WorkerError('DATABASE_OPEN', `Could not initialize the worker database: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  private transaction<T>(run: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = run();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  private load(id: string): Job {
+    const row = this.db.prepare('SELECT body FROM jobs WHERE id = ?').get(id);
+    if (!row) throw new WorkerError('JOB_NOT_FOUND', 'No job matches that ID.');
+    return JSON.parse(row.body as string) as Job;
+  }
+
+  get(id: string): Job {
+    return this.load(id);
+  }
+
+  list(): Job[] {
+    return this.db.prepare('SELECT body FROM jobs ORDER BY created_at, id').all()
+      .map(row => JSON.parse(row.body as string) as Job);
+  }
+
+  submit(artwork: Artwork, workflow: Workflow, mode: Mode, now: number): { job: Job; duplicate: boolean } {
+    return this.transaction(() => {
+      const key = identity(artwork, mode);
+      const row = this.db.prepare('SELECT body FROM jobs WHERE identity = ?').get(key);
+      if (row) {
+        const job = JSON.parse(row.body as string) as Job;
+        if (JSON.stringify(job.artwork) !== JSON.stringify(artwork) || JSON.stringify(job.workflow) !== JSON.stringify(workflow)) {
+          throw new WorkerError('JOB_CONFLICT', 'This artwork and SKU already have a job in this mode with different input or workflow.');
+        }
+        return { job, duplicate: true };
+      }
+      const job: Job = {
+        id: randomUUID(), artwork, workflow, mode, status: 'queued', nextStage: 0, failures: 0,
+        results: [], history: [{ at: now, event: 'submitted' }], createdAt: now, updatedAt: now, availableAt: now,
+      };
+      this.db.prepare('INSERT INTO jobs (id, identity, status, available_at, created_at, body) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(job.id, key, job.status, job.availableAt, job.createdAt, JSON.stringify(job));
+      return { job, duplicate: false };
+    });
+  }
+
+  private save(job: Job, now: number, token: string | null = null, lease: number | null = null): Job {
+    job.updatedAt = now;
+    this.db.prepare('UPDATE jobs SET status = ?, available_at = ?, claim_token = ?, lease_until = ?, body = ? WHERE id = ?')
+      .run(job.status, job.availableAt, token, lease, JSON.stringify(job), job.id);
+    return job;
+  }
+
+  claim(now: number): Claim | undefined {
+    return this.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT body FROM jobs
+        WHERE (status IN ('queued', 'retry_wait') AND available_at <= ?)
+           OR (status = 'running' AND lease_until <= ?)
+        ORDER BY available_at, created_at, id LIMIT 1
+      `).get(now, now);
+      if (!row) return undefined;
+      const job = JSON.parse(row.body as string) as Job;
+      const stageId = job.workflow.stages[job.nextStage]!.id;
+      if (job.status === 'running') job.history.push({ at: now, event: 'lease_recovered', stageId });
+      job.status = 'running';
+      job.history.push({ at: now, event: 'stage_started', stageId });
+      const token = randomUUID();
+      return { token, job: this.save(job, now, token, now + job.workflow.leaseMs) };
+    });
+  }
+
+  private settle(claim: Claim, now: number, update: (job: Job) => void): Job | undefined {
+    return this.transaction(() => {
+      const row = this.db.prepare('SELECT body FROM jobs WHERE id = ? AND claim_token = ? AND lease_until > ?')
+        .get(claim.job.id, claim.token, now);
+      if (!row) return undefined;
+      const job = JSON.parse(row.body as string) as Job;
+      update(job);
+      return this.save(job, now);
+    });
+  }
+
+  private advance(job: Job, result: StageResult, now: number): void {
+    job.results.push(result);
+    job.history.push({ at: now, event: result.outcome, stageId: result.stageId });
+    job.nextStage += 1;
+    job.failures = 0;
+    job.availableAt = now;
+    job.status = job.nextStage === job.workflow.stages.length ? 'completed' : 'queued';
+    if (job.status === 'completed') job.history.push({ at: now, event: 'completed' });
+  }
+
+  finish(claim: Claim, result: StageResult, now: number): Job | undefined {
+    return this.settle(claim, now, job => this.advance(job, result, now));
+  }
+
+  pause(claim: Claim, stageId: string, now: number): Job | undefined {
+    return this.settle(claim, now, job => {
+      job.status = 'awaiting_approval';
+      job.history.push({ at: now, event: 'approval_required', stageId });
+    });
+  }
+
+  approve(id: string, stageId: string, approver: string, now: number): Job {
+    return this.transaction(() => {
+      const job = this.load(id);
+      if (job.results.some(result => result.stageId === stageId && result.outcome === 'approved')) return job;
+      const stage = job.workflow.stages[job.nextStage];
+      if (job.status !== 'awaiting_approval' || stage?.kind !== 'approval' || stage.id !== stageId) {
+        throw new WorkerError('APPROVAL_MISMATCH', 'This job is not awaiting approval for that stage.');
+      }
+      this.advance(job, { stageId, outcome: 'approved', details: { approver } }, now);
+      return this.save(job, now);
+    });
+  }
+
+  fail(claim: Claim, stageId: string, error: WorkerError, now: number): Job | undefined {
+    return this.settle(claim, now, job => {
+      job.failures += 1;
+      const retry = error.retryable && job.failures < job.workflow.maxAttempts;
+      job.status = retry ? 'retry_wait' : 'failed';
+      job.availableAt = now + (retry ? job.workflow.retryDelayMs : 0);
+      job.history.push({
+        at: now, event: retry ? 'retry_scheduled' : 'failed', stageId, code: error.code, message: error.message,
+      });
+    });
+  }
+
+  applyEffect(
+    key: string, action: WriteAction, request: Details, apply: () => Details,
+  ): Effect {
+    return this.transaction(() => {
+      const payload = JSON.stringify(request);
+      const row = this.db.prepare('SELECT action, request, details FROM effects WHERE key = ?').get(key);
+      if (row) {
+        if (row.action !== action || row.request !== payload) {
+          throw new WorkerError('EFFECT_CONFLICT', 'An existing simulated write has a different request for this identity.');
+        }
+        return { details: JSON.parse(row.details as string) as Details, reused: true };
+      }
+      const details = apply();
+      this.db.prepare('INSERT INTO effects (key, action, request, details) VALUES (?, ?, ?, ?)')
+        .run(key, action, payload, JSON.stringify(details));
+      return { details, reused: false };
+    });
+  }
+
+  effectCounts(): Record<string, number> {
+    return Object.fromEntries(this.db.prepare('SELECT action, COUNT(*) AS count FROM effects GROUP BY action').all()
+      .map(row => [row.action as string, row.count as number]));
+  }
+}
