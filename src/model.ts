@@ -63,7 +63,7 @@ export interface Workflow {
   stages: Stage[];
 }
 
-export type Status = 'queued' | 'running' | 'awaiting_approval' | 'retry_wait' | 'failed' | 'completed';
+export type Status = 'queued' | 'running' | 'awaiting_approval' | 'retry_wait' | 'failed' | 'needs_review' | 'completed';
 
 export interface Job {
   id: string;
@@ -93,6 +93,7 @@ export interface StageResult {
     size: string;
     color: string;
     outcome: 'planned' | 'assigned' | 'already_assigned' | 'preserved';
+    review?: { code: 'UNEXPECTED_VARIANT_SKU'; observedSku: string };
   }[];
 }
 

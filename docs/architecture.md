@@ -26,6 +26,8 @@ Dry-run plans the write before reaching the adapter dispatch, which leaves the s
 
 Phase 2 adds a read-only sheet adapter, artwork with multiple garment assignments, and a local Shopify product and variant catalog. See the [SKU processing guide](sku-processing.md) for matching, retry behavior, and the Hextom window.
 
+Phase 3 adds authenticated Google Sheets intake with header validation and explicit row eligibility. It prepares the same queued artwork model from a verified selection and records unexpected variant SKUs for review. See the [Google Sheets intake guide](google-sheets.md).
+
 ## Phase 1 scope
 
 This foundation runs against a local database and a CLI that drains currently available work. Operator names are local audit labels. The fixtures do not define production SKU uniqueness, source schemas, approval authority, platform write contracts, or reconciliation rules. Before enabling live integrations, define those rules with the owner and verify that each provider supports idempotent writes or can reliably reconcile an interrupted request.

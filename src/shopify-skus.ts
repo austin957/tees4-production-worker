@@ -9,10 +9,14 @@ export interface ShopifyVariant {
   sku: string | null;
 }
 
-export interface ShopifyProduct {
+export interface ShopifyProductBinding {
   id: string;
   artworkSku: string;
   productSku: string;
+  mockupifyExportRef?: string;
+}
+
+export interface ShopifyProduct extends ShopifyProductBinding {
   variants: ShopifyVariant[];
 }
 
@@ -24,12 +28,13 @@ export type InitialSkuTarget = {
 };
 
 type Assignment = NonNullable<StageResult['skuAssignments']>[number];
-type AssignmentOutcome = Exclude<Assignment['outcome'], 'planned'>;
+type ExistingSkuResult = { outcome: 'already_assigned' } | { outcome: 'preserved'; review: NonNullable<Assignment['review']> };
+type AssignmentResult = ExistingSkuResult | { outcome: 'assigned' };
 
 export interface ShopifySkuAdapter {
   findProducts(productSku: string): Promise<readonly ShopifyProduct[]>;
   // Implementations must recheck product binding, SKU state and the protected window at mutation time.
-  assignInitialSku(target: InitialSkuTarget, clock: () => number): Promise<AssignmentOutcome>;
+  assignInitialSku(target: InitialSkuTarget, clock: () => number): Promise<AssignmentResult>;
 }
 
 export function parseShopifyCatalog(input: unknown): ShopifyProduct[] {
@@ -38,7 +43,7 @@ export function parseShopifyCatalog(input: unknown): ShopifyProduct[] {
   const variantIds = new Set<string>();
   return input.map((entry: unknown) => {
     const raw = object(entry, 'Shopify product');
-    onlyKeys(raw, ['id', 'artworkSku', 'productSku', 'variants'], 'Shopify product');
+    onlyKeys(raw, ['id', 'artworkSku', 'productSku', 'mockupifyExportRef', 'variants'], 'Shopify product');
     const id = requiredText(raw.id, 'Shopify product ID');
     if (productIds.has(id)) throw new WorkerError('DUPLICATE_ID', 'Shopify product IDs must be unique.');
     productIds.add(id);
@@ -66,6 +71,9 @@ export function parseShopifyCatalog(input: unknown): ShopifyProduct[] {
       id,
       artworkSku: requiredText(raw.artworkSku, 'Product Artwork SKU'),
       productSku: requiredText(raw.productSku, 'Product SKU binding'),
+      ...(raw.mockupifyExportRef === undefined ? {} : {
+        mockupifyExportRef: requiredText(raw.mockupifyExportRef, 'Mockupify export reference'),
+      }),
       variants: variants.sort((left, right) => left.id < right.id ? -1 : Number(left.id > right.id)),
     };
   });
@@ -105,9 +113,11 @@ export function assertSkuWindow(now: number): void {
   if (until !== undefined) throw new SkuWriteDeferred(until);
 }
 
-export function existingSku(sku: string | null, expected: string): Exclude<AssignmentOutcome, 'assigned'> | undefined {
+export function existingSku(sku: string | null, expected: string): ExistingSkuResult | undefined {
   if (sku === null) return undefined;
-  return sku === expected ? 'already_assigned' : 'preserved';
+  return sku === expected
+    ? { outcome: 'already_assigned' }
+    : { outcome: 'preserved', review: { code: 'UNEXPECTED_VARIANT_SKU', observedSku: sku } };
 }
 
 export async function assignSkus(
@@ -130,16 +140,12 @@ export async function assignSkus(
   for (const product of products) {
     for (const variant of product.variants) {
       const target = { productId: product.id, artworkSku: artwork.artworkSku, productSku: product.productSku, variantId: variant.id };
-      let outcome: Assignment['outcome'];
-      if (mode === 'dry-run') {
-        outcome = existingSku(variant.sku, product.productSku) ?? 'planned';
-      } else {
-        // Consult current state in the adapter even when the read snapshot said the SKU was already set.
-        outcome = await adapter.assignInitialSku(target, clock);
-      }
+      const result = mode === 'dry-run'
+        ? existingSku(variant.sku, product.productSku) ?? { outcome: 'planned' as const }
+        : await adapter.assignInitialSku(target, clock);
       assignments.push({
         productId: target.productId, productSku: target.productSku, variantId: target.variantId,
-        size: variant.size, color: variant.color, outcome,
+        size: variant.size, color: variant.color, ...result,
       });
     }
   }

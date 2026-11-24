@@ -60,17 +60,25 @@ function parseRows(rows: readonly unknown[]) {
   }).sort((left, right) => left.garment.sourceRow - right.garment.sourceRow);
 }
 
-export async function readProductionArtwork(input: unknown, sheets: GoogleSheetsAdapter): Promise<ProductionArtwork> {
+export function parseArtworkSelection(input: unknown) {
   const selection = object(input, 'Artwork selection');
   onlyKeys(selection, ['artworkId', 'artworkRef', 'designerId', 'artworkSku'], 'Artwork selection');
-  const identity = parseArtworkIdentity(selection);
-  const artworkSku = requiredText(selection.artworkSku, 'Artwork SKU');
-  const rows = parseRows(await sheets.readRows(masterInput)).filter(row => row.artworkSku === artworkSku);
+  return { ...parseArtworkIdentity(selection), artworkSku: requiredText(selection.artworkSku, 'Artwork SKU') };
+}
+
+export function productionArtworkFromRows(input: unknown, rawRows: readonly unknown[]): ProductionArtwork {
+  const selection = parseArtworkSelection(input);
+  const rows = parseRows(rawRows).filter(row => row.artworkSku === selection.artworkSku);
   const first = rows[0];
   if (!first) throw new WorkerError('ARTWORK_NOT_FOUND', 'No sheet rows match the selected Artwork SKU.');
   return {
-    ...identity, kind: 'production', artworkSku, artworkName: first.artworkName, garments: rows.map(row => row.garment),
+    ...selection, kind: 'production', artworkName: first.artworkName, garments: rows.map(row => row.garment),
   };
+}
+
+export async function readProductionArtwork(input: unknown, sheets: GoogleSheetsAdapter): Promise<ProductionArtwork> {
+  const selection = parseArtworkSelection(input);
+  return productionArtworkFromRows(selection, await sheets.readRows(masterInput));
 }
 
 export function parseJobArtwork(input: unknown): Artwork {

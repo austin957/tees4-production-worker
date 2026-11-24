@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { isProduction, WorkerError } from './model.js';
 import { assertSkuWindow, existingSku, parseShopifyCatalog, resolveProduct } from './shopify-skus.js';
-import type { InitialSkuTarget, ShopifyProduct, ShopifySkuAdapter } from './shopify-skus.js';
+import type { InitialSkuTarget, ShopifyProduct, ShopifyProductBinding, ShopifySkuAdapter } from './shopify-skus.js';
 import type { Artwork, Details, Job, Mode, StageResult, Workflow, WriteAction } from './model.js';
 
 interface Claim {
@@ -166,8 +166,12 @@ export class Store {
     job.nextStage += 1;
     job.failures = 0;
     job.availableAt = now;
-    job.status = job.nextStage === job.workflow.stages.length ? 'completed' : 'queued';
-    if (job.status === 'completed') job.history.push({ at: now, event: 'completed' });
+    job.status = 'queued';
+    if (job.nextStage === job.workflow.stages.length) {
+      const needsReview = job.results.some(stage => stage.skuAssignments?.some(variant => variant.review));
+      job.status = needsReview ? 'needs_review' : 'completed';
+      job.history.push({ at: now, event: job.status });
+    }
   }
 
   finish(claim: Claim, result: StageResult, now: number): Job | undefined {
@@ -242,9 +246,14 @@ export class Store {
     });
   }
 
-  private findShopifyBindings(productSku: string): Omit<ShopifyProduct, 'variants'>[] {
-    return this.db.prepare('SELECT id, artwork_sku FROM shopify_products WHERE product_sku = ? ORDER BY id')
-      .all(productSku).map(row => ({ id: row.id as string, artworkSku: row.artwork_sku as string, productSku }));
+  private findShopifyBindings(productSku: string): ShopifyProductBinding[] {
+    return this.db.prepare(`
+      SELECT id, artwork_sku, json_extract(fixture, '$.mockupifyExportRef') AS export_ref
+      FROM shopify_products WHERE product_sku = ? ORDER BY id
+    `).all(productSku).map(row => ({
+      id: row.id as string, artworkSku: row.artwork_sku as string, productSku,
+      ...(typeof row.export_ref === 'string' ? { mockupifyExportRef: row.export_ref } : {}),
+    }));
   }
 
   private findShopifyProducts(productSku: string): ShopifyProduct[] {
@@ -270,7 +279,7 @@ export class Store {
       const update = this.db.prepare('UPDATE shopify_variants SET sku = ? WHERE product_id = ? AND id = ? AND sku IS NULL');
       assertSkuWindow(clock());
       update.run(target.productSku, target.productId, target.variantId);
-      return 'assigned' as const;
+      return { outcome: 'assigned' as const };
     });
   }
 

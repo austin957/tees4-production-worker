@@ -52,7 +52,7 @@ export class Worker {
   }
 
   private emit(job: Job, event: string, stageId?: string, error?: WorkerError): void {
-    const level = event === 'failed' ? 'error' : error || event === 'lease_recovered' ? 'warn' : 'info';
+    const level = event === 'failed' ? 'error' : error || event === 'lease_recovered' || event === 'needs_review' ? 'warn' : 'info';
     this.log({
       at: this.clock(), level, event, jobId: job.id,
       ...(stageId === undefined ? {} : { stageId }),
@@ -95,7 +95,7 @@ export class Worker {
       }
       const updated = this.store.finish(claim, result, this.clock());
       this.emit(job, updated ? result.outcome : 'lease_lost', stage.id);
-      if (updated?.status === 'completed') this.emit(job, 'completed');
+      if (updated?.status === 'completed' || updated?.status === 'needs_review') this.emit(job, updated.status);
     }
     return { processed, failed };
   }

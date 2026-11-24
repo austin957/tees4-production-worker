@@ -89,7 +89,10 @@ test('simulated import and sheet submission persist across CLI invocations, with
   assert.equal(submitted.mode, 'dry-run');
   exec('run');
   const report = exec('inspect', submitted.jobId);
-  assert.equal(report.status, 'completed');
+  assert.equal(report.status, 'needs_review');
+  assert.deepEqual(report.stages[1].skuAssignments[2].review, {
+    code: 'UNEXPECTED_VARIANT_SKU', observedSku: 'existing-sku-preserve-exactly',
+  });
   assert.deepEqual(report.stages[1].skuAssignments.map((entry: { outcome: string }) => entry.outcome), [
     'planned', 'planned', 'preserved', 'planned', 'already_assigned',
   ]);
@@ -110,7 +113,7 @@ test('assigns the same Product SKU to each blank variant, preserves existing SKU
   assert.throws(() => worker.submit(artwork, legacy), { code: 'WORKFLOW_INPUT_MISMATCH' });
   await worker.runAvailable();
   const result = store.get(job.id);
-  assert.equal(result.status, 'completed');
+  assert.equal(result.status, 'needs_review');
   assert.deepEqual(result.results[1]?.skuAssignments?.map(entry => [entry.productId, entry.outcome]), [
     ['fixture-product-101', 'assigned'], ['fixture-product-101', 'assigned'], ['fixture-product-101', 'preserved'],
     ['fixture-product-102', 'assigned'], ['fixture-product-102', 'already_assigned'],
@@ -144,13 +147,14 @@ test('stops on ambiguous, missing or conflicting bindings before writing to any 
 });
 
 test('recovers a partial write and preserves a final SKU written between attempts', async t => {
-  const { store, path, artwork, adapter } = await setup(t);
+  const products = catalog.map((product, index) => ({ ...product, mockupifyExportRef: `partial-export-${index}` }));
+  const { store, path, artwork, adapter } = await setup(t, products);
   let now = instant;
   const failing = {
     ...adapter,
     assignInitialSku: async (...args: Parameters<typeof adapter.assignInitialSku>) => {
       const outcome = await adapter.assignInitialSku(...args);
-      if (outcome === 'assigned') throw new WorkerError('SIMULATED_TIMEOUT', 'Timed out after writing a variant.', true);
+      if (outcome.outcome === 'assigned') throw new WorkerError('SIMULATED_TIMEOUT', 'Timed out after writing a variant.', true);
       return outcome;
     },
   };
@@ -171,9 +175,16 @@ test('recovers a partial write and preserves a final SKU written between attempt
     const resumed = new Worker(reopened, simulatedAdapters(reopened), undefined, () => now);
     await resumed.runAvailable();
     const result = reopened.get(job.id);
-    assert.equal(result.status, 'completed');
+    assert.equal(result.status, 'needs_review');
     assert.equal(result.results[1]?.skuAssignments?.[0]?.outcome, 'preserved');
+    assert.deepEqual(result.results[1]?.skuAssignments?.[0]?.review, {
+      code: 'UNEXPECTED_VARIANT_SKU', observedSku: 'final-value-from-hextom',
+    });
     assert.equal(result.results[1]?.skuAssignments?.[1]?.outcome, 'assigned');
+    const [binding] = await reopened.shopifySkuAdapter().findProducts('000710');
+    assert.equal(result.results[1]?.skuAssignments?.[1]?.productId, binding?.id);
+    assert.equal(result.results[1]?.skuAssignments?.[1]?.variantId, binding?.variants[1]?.id);
+    assert.equal(binding?.mockupifyExportRef, 'partial-export-0');
     assert.equal((await adapter.findProducts('000710'))[0]?.variants[0]?.sku, 'final-value-from-hextom');
   } finally {
     reopened.close();
@@ -222,6 +233,31 @@ test('rechecks protection at the write and reschedules without consuming a retry
   assert.deepEqual(await worker.runAvailable(), { processed: 0, failed: [] });
   now = endsAt;
   await worker.runAvailable();
-  assert.equal(store.get(job.id).status, 'completed');
+  assert.equal(store.get(job.id).status, 'needs_review');
   assert.equal((await adapter.findProducts('000710'))[0]?.variants[0]?.sku, '000710');
+});
+
+test('preserves immutable export provenance and existing IDs during dry-run', async t => {
+  const products = catalog.map((product, index) => ({ ...product, mockupifyExportRef: `fixture-export-${index}` }));
+  const { store, path, adapter, artwork } = await setup(t, products);
+  assert.throws(() => store.importShopifyFixtures([{ ...products[0]!, mockupifyExportRef: 'changed-export' }]), {
+    code: 'FIXTURE_CONFLICT',
+  });
+  const second = new Store(path);
+  try {
+    assert.deepEqual(await second.shopifySkuAdapter().findProducts('000710'), [products[0]]);
+    const noWrites = {
+      ...adapter,
+      assignInitialSku: async () => assert.fail('Dry-run attempted a variant write'),
+    };
+    const worker = new Worker(second, simulatedAdapters(second), undefined, () => instant, noWrites);
+    const { job } = worker.submit(artwork, workflow);
+    await worker.runAvailable();
+    const record = second.get(job.id);
+    assert.equal(record.results[1]?.skuAssignments?.[0]?.productId, 'fixture-product-101');
+    assert.equal(record.results[1]?.skuAssignments?.[0]?.variantId, 'fixture-variant-201');
+    assert.deepEqual(await second.shopifySkuAdapter().findProducts('000710'), [products[0]]);
+  } finally {
+    second.close();
+  }
 });

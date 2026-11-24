@@ -1,0 +1,8 @@
+{
+  "headerRow": 1,
+  "eligibility": {
+    "column": "L",
+    "header": "Example Approval Status",
+    "allowedValues": ["Example Approved"]
+  }
+}

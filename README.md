@@ -50,3 +50,7 @@ Relative paths are resolved from the current working directory. Repeat `run` aft
 ## Phase 2 sheet-backed SKU workflow
 
 Use the [SKU processing guide](docs/sku-processing.md) to run a two-garment fixture, preview variant assignments, or simulate local SKU writes. The guide describes the read-only Master Input adapter, Shopify ID bindings, and the Central-time protection window.
+
+## Phase 3 Google Sheets intake
+
+The [Google Sheets intake guide](docs/google-sheets.md) covers read-only authorization, header and eligibility configuration, and previewing or queuing verified garment assignments. Mockupify and Shopify continue to use simulated adapters.

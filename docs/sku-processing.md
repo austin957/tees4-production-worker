@@ -1,6 +1,6 @@
 # Phase 2 SKU processing
 
-The read-only Sheets adapter targets the **Master Input** tab of **Design Input Master** (spreadsheet ID `1UxdIY03ICu5t2G0fEo0nor6-giAEF4xdMuNEvYN_JMM`). The worker uses local fixtures in this phase.
+The read-only Sheets adapter targets the **Master Input** tab of **Design Input Master** (spreadsheet ID `1UxdIY03ICu5t2G0fEo0nor6-giAEF4xdMuNEvYN_JMM`). The Phase 2 workflow uses local fixtures. Phase 3 adds an authenticated [read-only intake](google-sheets.md) for the same sheet.
 
 | Column | Field |
 | --- | --- |
@@ -20,7 +20,7 @@ The adapter supplies positional A–K data rows with physical row numbers. It le
 
 An artwork job can contain multiple garment assignments. The simulator imports exported Shopify fixture products with explicit bindings between their Shopify product ID, Artwork SKU, and Product SKU. Each variant has its own Shopify ID and size/color options. The SKU assignment stage requires exactly one binding per assigned Product SKU before beginning writes. Missing, conflicting, or ambiguous bindings stop the job. The stage uses the imported variants and does not infer a size/color matrix from the sheet.
 
-Every blank variant of an unambiguously matched product receives the exact value from column H. A variant that already has that value is considered assigned. Any other nonempty SKU is preserved and reported. The worker does not parse or reverse a Hextom SKU.
+Every blank variant of an unambiguously matched product receives the exact value from column H. A variant that already has that value is considered assigned. Any other nonempty SKU is preserved and flagged for review. The worker does not parse or reverse a Hextom SKU.
 
 The simulator checks the binding and current variant SKU inside a SQLite transaction before updating any blank variant. If a job stops partway through, the next attempt reads current values and continues with blank variants. The fixture importer is idempotent and preserves simulated updates when the original fixture is imported again.
 

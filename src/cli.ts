@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util';
 import type { ParseArgsConfig } from 'node:util';
 import { simulatedAdapters } from './adapters.js';
 import { object, onlyKeys, readJson, settings } from './config.js';
+import { googleSheets, parseSheetPolicy, previewSheetArtwork } from './google-sheets.js';
 import { asWorkerError, WorkerError } from './model.js';
 import { readProductionArtwork, simulatedSheets } from './sheets.js';
 import { Store } from './store.js';
@@ -10,6 +11,8 @@ import { report, Worker } from './worker.js';
 const help = `Tees-4 Production Worker
   submit <artwork.json> [--mode dry-run|simulate]
   submit-sheet <sheet-fixture.json> [--mode dry-run|simulate]
+  preview-google-sheet <artwork-selection.json> <policy.json>
+  submit-google-sheet <artwork-selection.json> <policy.json>
   load-shopify-fixture <shopify-fixture.json>
   run [--limit <count>] [--fail-after-create]
   list
@@ -37,6 +40,8 @@ async function main(): Promise<void> {
   const commandOptions = {
     submit: { mode: { type: 'string' } },
     'submit-sheet': { mode: { type: 'string' } },
+    'preview-google-sheet': {},
+    'submit-google-sheet': {},
     'load-shopify-fixture': {},
     run: { limit: { type: 'string' }, 'fail-after-create': { type: 'boolean' } },
     approve: { by: { type: 'string' } },
@@ -52,6 +57,21 @@ async function main(): Promise<void> {
   }
   const { positionals, values } = parsed;
   const { workflowPath, databasePath } = settings(process.env);
+  let selectedArtwork;
+  if (command === 'preview-google-sheet' || command === 'submit-google-sheet') {
+    positional(positionals, 2);
+    const selection = readJson(positionals[0]!, 'artwork selection');
+    const policy = parseSheetPolicy(readJson(positionals[1]!, 'sheet policy'));
+    const preview = await previewSheetArtwork(selection, policy, googleSheets(policy));
+    if (command === 'preview-google-sheet') {
+      console.log(JSON.stringify(preview, null, 2));
+      return;
+    }
+    if (preview.status !== 'ready' || !preview.artwork) {
+      throw new WorkerError('SHEET_NOT_READY', `Sheet selection is ${preview.status}. Run preview-google-sheet to inspect its rows.`);
+    }
+    selectedArtwork = preview.artwork;
+  }
   const store = new Store(databasePath);
   try {
     const adapters = simulatedAdapters(store);
@@ -82,6 +102,11 @@ async function main(): Promise<void> {
         onlyKeys(fixture, ['artwork', 'rows'], 'Sheet fixture');
         const artwork = await readProductionArtwork(fixture.artwork, simulatedSheets(fixture.rows));
         const result = worker.submit(artwork, readJson(workflowPath, 'workflow'), values.mode);
+        output = { duplicate: result.duplicate, ...report(result.job) };
+        break;
+      }
+      case 'submit-google-sheet': {
+        const result = worker.submit(selectedArtwork, readJson(workflowPath, 'workflow'));
         output = { duplicate: result.duplicate, ...report(result.job) };
         break;
       }
