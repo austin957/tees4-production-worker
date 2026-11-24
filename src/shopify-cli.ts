@@ -1,5 +1,5 @@
 import { integer, object, readJson, requiredText } from './config.js';
-import { googleSheets, parseSheetPolicy, previewSheetArtwork, readMasterInputMatchRows, readMasterInputSkuRows } from './google-sheets.js';
+import { googleSheets, parseSheetPolicy, previewSheetArtwork, readMasterInputMatchRows, readMasterInputProductionRows, readMasterInputSkuRows } from './google-sheets.js';
 import { WorkerError } from './model.js';
 import { readProductionArtwork, simulatedSheets } from './sheets.js';
 import { verifyHextom } from './shopify-hextom.js';
@@ -7,6 +7,7 @@ import { discoverAdjustProducts, readAdjustProducts, summarizeAdjustProduct } fr
 import { compareShopifyProduct, selectShopifyBinding, shopifyAssignment } from './shopify-comparison.js';
 import { matchShopifyProducts, parseMatchFixture, parseOwnerConfirmations } from './shopify-matching.js';
 import type { MatchSheet } from './shopify-matching.js';
+import { auditShopifyProduction } from './shopify-production-audit.js';
 import { parseSheetFixture, parseVerifiedSource, reconcileShopifySource } from './shopify-reconciliation.js';
 import type { ReconciliationRequest, SheetEvidence } from './shopify-reconciliation.js';
 import { identifyShop, shopifyGid, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from './shopify-readonly.js';
@@ -18,6 +19,10 @@ export const shopifyCommands = {
     confirmations: { type: 'string' }, 'header-row': { type: 'string' }, 'sheet-fixture': { type: 'string' },
   },
   'shopify-hextom-verify': { 'verified-base-sku': { type: 'string' } },
+  'shopify-production-audit': {
+    'candidate-base-sku': { type: 'string' }, 'verified-source': { type: 'string' },
+    'read-master-input': { type: 'boolean' }, 'header-row': { type: 'string' },
+  },
   'shopify-reconcile': {
     'product-sku': { type: 'string' }, 'artwork-sku': { type: 'string' }, 'evidence-ref': { type: 'string' },
     row: { type: 'string' }, 'verified-source': { type: 'string' }, 'sheet-fixture': { type: 'string' },
@@ -34,6 +39,19 @@ export const shopifyCommands = {
 
 function readRowNumber(input: unknown, label: string): number {
   return integer(typeof input === 'string' && /^\d+$/.test(input) ? Number(input) : NaN, label, 1, Number.MAX_SAFE_INTEGER);
+}
+
+async function readProductionSheet(values: Record<string, unknown>) {
+  if (!values['read-master-input']) {
+    return { kind: 'unavailable' as const, code: 'MASTER_INPUT_NOT_REQUESTED', message: 'Master Input was not requested.' };
+  }
+  const headerRow = readRowNumber(values['header-row'] ?? '1', 'Master Input header row');
+  try {
+    return { kind: 'live' as const, rows: await readMasterInputProductionRows(headerRow) };
+  } catch (error) {
+    if (!(error instanceof WorkerError)) throw error;
+    return { kind: 'unavailable' as const, code: error.code, message: error.message };
+  }
 }
 
 async function readSourceSheet(values: Record<string, unknown>): Promise<SheetEvidence> {
@@ -98,6 +116,24 @@ export async function runShopifyCommand(command: string, args: string[], values:
   if (command === 'shopify-hextom-verify') {
     const base = values['verified-base-sku'];
     return verifyHextom(await client.product(args[0]!), typeof base === 'string' ? base : undefined);
+  }
+  if (command === 'shopify-production-audit') {
+    const productId = shopifyGid(args[0], 'Product');
+    const recordPath = values['verified-source'];
+    const candidate = values['candidate-base-sku'];
+    if (recordPath !== undefined && candidate !== undefined) {
+      throw new WorkerError('CLI_USAGE', 'Use either --verified-source or --candidate-base-sku.');
+    }
+    if ((values['read-master-input'] && recordPath === undefined)
+      || (values['header-row'] !== undefined && !values['read-master-input'])) {
+      throw new WorkerError('CLI_USAGE', 'Use --read-master-input with --verified-source, and --header-row with --read-master-input.');
+    }
+    if (recordPath === undefined) {
+      return auditShopifyProduction(client, config.shopId, productId,
+        candidate === undefined ? {} : { candidateBaseSku: requiredText(candidate, 'Candidate base Product SKU') });
+    }
+    const verifiedSource = parseVerifiedSource(readJson(requiredText(recordPath, 'Verified source path'), 'verified source record'));
+    return auditShopifyProduction(client, config.shopId, productId, { verifiedSource, sheet: await readProductionSheet(values) });
   }
   if (command === 'shopify-reconcile') {
     const request: ReconciliationRequest = {

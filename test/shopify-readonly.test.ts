@@ -191,6 +191,8 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const preload = join(directory, 'mock.mjs');
   const database = join(directory, 'should-not-exist.sqlite');
+  const fixture = product([variant(3, null), variant(4, '000710', 'L', 'Black')]);
+  fixture.options.push({ id: 'fixture-size', name: 'Size', position: 2, optionValues: [{ name: 'M' }, { name: 'L' }] });
   writeFileSync(preload, `
     Date.now = () => Date.parse('2026-11-24T00:00:00Z');
     globalThis.fetch = async (input, init) => {
@@ -204,7 +206,7 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
       const data = payload.query.includes('Tees4ReadIdentity') ? ${JSON.stringify(identity)} :
         payload.query.includes('Tees4ReadAdjustCandidates') ?
         { products: { nodes: [], pageInfo: { hasNextPage: false } } } :
-        { product: ${JSON.stringify(product([variant(3, null), variant(4, '000710', 'L', 'Black')]))} };
+        { product: ${JSON.stringify(fixture)} };
       return Response.json({ data }, { headers: { 'X-Shopify-API-Version': '2026-10' } });
     };`);
   const cli = (shopId: string, ...args: string[]) => spawnSync(process.execPath, [
@@ -233,6 +235,12 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
   assert.equal(reconciliation.proposedBinding, null);
   assert.equal(run('shopify-hextom-verify', id).status, 'NEEDS_RECONCILIATION');
   assert.equal(run('shopify-hextom-verify', id, '--verified-base-sku', '000710').status, 'MANUAL_REVIEW');
+  const stage = run('shopify-production-audit', id, '--candidate-base-sku', '000710');
+  assert.equal(stage.status, 'NEEDS_RECONCILIATION');
+  assert.equal(stage.source.verifiedBaseSku, null);
+  assert.equal(stage.skuCounts.INITIAL, 1);
+  assert.equal(stage.variantFindings.length, 1);
+  assert.equal(stage.variantFindings[0].status, 'MISSING_SKU');
   const compare = ['examples/shopify-readonly-bindings.json', '2', 'examples/sheet-input.json', '--fixture'];
   assert.equal(run('shopify-compare', ...compare).status, 'sku_assignment_required');
   assert.equal(run('shopify-preview', ...compare).proposedAssignments.length, 1);

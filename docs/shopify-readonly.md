@@ -86,6 +86,28 @@ The verifier reads all variant pages and uses Shopify's configured option positi
 
 The verified Hextom configuration displays a daily 6:15 PM SKU transformation and a 9:00 PM tag removal in its local time. Its displayed timezone is still unverified against task history, and the verifier does not use those times to infer outcomes. `VERIFIED_COMPLETE` verifies the SKU result only. It does not prove which app performed the change, establish a Master Input binding, or mark a sheet row complete. Reads remain independent of the 4:20–9:10 PM America/Chicago protection for exports and initial SKU writes.
 
+## Audit the production stage
+
+```sh
+npm run --silent worker -- shopify-production-audit <product-gid> --candidate-base-sku <supplied-sku>
+npm run --silent worker -- shopify-production-audit <product-gid> --verified-source /path/to/verified-source.json --read-master-input
+```
+
+Use a [reviewed source record](shopify-reconciliation.md#verify-source-evidence) that links the shop and product GIDs to the original garment's Product and Artwork SKUs. An owner-reviewed Master Input record must include the physical row. A Mockupify export record also requires an unambiguous live Master Input row. A conflicting live row prevents verification. Use `--read-master-input` to read columns H, I and K with the read-only connection. Use `--header-row` to select a known header below row 1. Column I (`Tees-4 Completed`) is displayed for a matching live row and can flag discrepancies between the sheet and Shopify. The SKU and tag checks determine the stage.
+
+| Status | Evidence |
+| --- | --- |
+| `SKU_PREPARATION_IN_PROGRESS` | Exact lowercase `adjust`, a verified source, and initial SKUs mixed with blanks or other unresolved SKU values. An entirely blank set can also be awaiting preparation. The report lists the affected variants. |
+| `READY_FOR_HEXTOM` | Exact lowercase `adjust`, a verified source, and every variant carrying the exact base SKU with unambiguous variant IDs and options. |
+| `HEXTOM_PROCESSING_OR_PENDING` | Exact lowercase `adjust` and a mix of the verified base and exact final SKUs, or every SKU is verified final while the tag is still present. |
+| `VERIFIED_COMPLETE` | Every variant has its exact once-transformed SKU and the exact lowercase tag is absent. |
+| `NEEDS_RECONCILIATION` | The Master Input linkage is unverified or conflicting, or Shopify changed between reads. |
+| `MANUAL_REVIEW` | The verified source and Shopify state require review, for example duplicate transformations, invalid variant IDs or options, unexpected SKUs in a partially transformed set, or missing `adjust` with unfinished SKU work. |
+
+A supplied candidate SKU supports a comparison of the stored variant values. The report can show an `observedStage` of `SKU_PREPARATION_IN_PROGRESS` if some variants match the supplied SKU and others still have preparation exceptions. The audit status remains `NEEDS_RECONCILIATION` until the source is verified.
+
+The audit compares two complete Shopify reads, including the SKU, option and tag data. If a product changes during pagination or between snapshots, run a fresh audit. The command performs reads only. The existing daily **4:20 PM inclusive to 9:10 PM exclusive America/Chicago** protection for exports and initial SKU writes still applies.
+
 ## Compare a binding with Master Input
 
 Prepare a binding manifest using the IDs verified during Mockupify reconciliation or independently verified in Shopify. The [example manifest](../examples/shopify-readonly-bindings.json) extends the Phase 5 binding with the shop GID and the complete expected variants. Record the physical row, both assigned SKUs, and the Mockupify export reference when available. Use the exact Shopify option names if they differ from `Size` or `Color`. A null expected option value declares that the variant should have no such option.

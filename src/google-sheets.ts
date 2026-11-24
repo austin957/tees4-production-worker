@@ -130,13 +130,27 @@ function displayedText(value: unknown): string | null {
   return value;
 }
 
-export async function readMasterInputSkuRows(headerRow: number, readValues = authenticatedReader()): Promise<MasterInputSkuRow[]> {
-  const rows = await readSheetRows(masterInput, 'H', 'K', headerRow,
-    [['H', mappedHeaders.H], ['K', mappedHeaders.K]], readValues);
+async function readMasterInputSkuCells(headerRow: number, readValues: ReadValues, includeCompletion: boolean) {
+  const headers: [string, string][] = [['H', mappedHeaders.H], ['K', mappedHeaders.K]];
+  if (includeCompletion) headers.push(['I', 'Tees-4 Completed']);
+  const rows = await readSheetRows(masterInput, 'H', 'K', headerRow, headers, readValues);
   return rows.map(({ rowNumber, cells }) => {
     if (!Array.isArray(cells)) throw new WorkerError('INVALID_SHEET_ROW', 'Sheets returned a data row with invalid cells.');
-    return { rowNumber, productSku: displayedText(cells[0]), artworkSku: displayedText(cells[3]) };
+    return { row: { rowNumber, productSku: displayedText(cells[0]), artworkSku: displayedText(cells[3]) }, completion: cells[1] };
   });
+}
+
+export async function readMasterInputSkuRows(headerRow: number, readValues = authenticatedReader()): Promise<MasterInputSkuRow[]> {
+  return (await readMasterInputSkuCells(headerRow, readValues, false)).map(({ row }) => row);
+}
+
+export interface MasterInputProductionRow extends MasterInputSkuRow {
+  completion: string | null;
+}
+
+export async function readMasterInputProductionRows(headerRow: number, readValues = authenticatedReader()): Promise<MasterInputProductionRow[]> {
+  const rows = await readMasterInputSkuCells(headerRow, readValues, true);
+  return rows.map(({ row, completion }) => ({ ...row, completion: displayedText(completion) }));
 }
 
 export interface MasterInputMatchRow extends MasterInputSkuRow {
