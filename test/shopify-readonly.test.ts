@@ -32,7 +32,7 @@ const product = (nodes: unknown[], endCursor: string | null = null) => ({
   id, title: 'Fixture Product', handle: 'fixture-product', status: 'ACTIVE', vendor: 'Fixture Vendor',
   publishedAt: '2026-10-05T12:00:00Z', tags: [],
   createdAt: '2026-10-03T12:00:00Z', updatedAt: '2026-11-24T12:00:00Z',
-  options: [{ id: 'fixture-option', name: 'Color', optionValues: [{ name: 'White' }, { name: 'Black' }] }],
+  options: [{ id: 'fixture-option', name: 'Color', position: 1, optionValues: [{ name: 'White' }, { name: 'Black' }] }],
   variants: { nodes, pageInfo: { hasNextPage: endCursor !== null, endCursor } },
 });
 
@@ -222,6 +222,8 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
   assert.equal(run('shopify-variants', id).variants.length, 2);
   assert.equal(run('shopify-adjust').count, 0);
   assert.equal(run('shopify-adjust', id).hasAdjustTag, false);
+  assert.equal(run('shopify-hextom-verify', id).status, 'NEEDS_RECONCILIATION');
+  assert.equal(run('shopify-hextom-verify', id, '--verified-base-sku', '000710').status, 'MANUAL_REVIEW');
   const compare = ['examples/shopify-readonly-bindings.json', '2', 'examples/sheet-input.json', '--fixture'];
   assert.equal(run('shopify-compare', ...compare).status, 'sku_assignment_required');
   assert.equal(run('shopify-preview', ...compare).proposedAssignments.length, 1);
@@ -392,4 +394,13 @@ test('exact lowercase tag audits classify SKU patterns without normalizing strin
     assert.deepEqual(report.tags, ['adjust', 'KeepAsIs']);
     assert.deepEqual(report.sku.values.map(entry => entry.value), [...new Set(skus.filter(sku => sku !== '' && sku !== null))]);
   }
+});
+
+test('variant pagination rejects a product update between pages', async () => {
+  const { client } = mocked([
+    response(grant), response({ data: identity }),
+    response({ data: { product: product([variant(3)], 'next') } }),
+    response({ data: { product: { ...product([variant(4)]), updatedAt: '2026-11-24T13:00:00Z' } } }),
+  ]);
+  await assert.rejects(client.product(id), { code: 'SHOPIFY_PRODUCT_CHANGED' });
 });

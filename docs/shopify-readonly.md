@@ -66,6 +66,26 @@ Tagged products with multiple variants sharing one SKU are possible pre-Hextom c
 
 The audit can run before, during, or after the **4:20–9:10 PM America/Chicago** protected window for exports and initial SKU writes. Compare snapshots by product GID without modifying tags, SKUs, or Hextom settings. Shopify data can change during a scan, so each snapshot reflects the observations made during that run.
 
+## Verify Hextom SKU completion
+
+```sh
+npm run --silent worker -- shopify-hextom-verify gid://shopify/Product/2 --verified-base-sku 'OWNER_VERIFIED_PRODUCT_SKU'
+npm run --silent worker -- shopify-hextom-verify gid://shopify/Product/2
+```
+
+Replace the example with a product GID verified independently and the original Product SKU from a trusted assignment or export record. Passing `--verified-base-sku` asserts that the caller verified the base belongs to this product. If that evidence is missing, omit the flag. The verifier does not infer a base from the title, the `adjust` tag, or any current SKU.
+
+The verifier reads all variant pages and uses Shopify's configured option positions 1 and 2, matching each variant by the corresponding option names. It constructs `[verified_base_sku]-[option1]-[option2]` exactly once from the original strings, including spaces and hyphens where present. Reports preserve the current SKU alongside its expected value. Repeated transformations, duplicate final values, ambiguous options, missing values and partially transformed products are flagged. Shopify updates detected during pagination stop the read so the operator can repeat it with a fresh snapshot.
+
+| Status | Meaning |
+| --- | --- |
+| `PENDING_HEXTOM` | Every variant still has the verified base SKU, option and variant data are unambiguous, and exact lowercase `adjust` is present |
+| `VERIFIED_COMPLETE` | Every variant exactly matches the expected one-time transformation with unambiguous variant IDs and expected SKUs, regardless of whether the tag remains |
+| `NEEDS_RECONCILIATION` | The caller did not supply a verified original base SKU |
+| `MANUAL_REVIEW` | A mismatch, duplicate, missing value or other ambiguity exists, including initial SKUs after the exact tag is absent |
+
+The verified Hextom configuration displays a daily 6:15 PM SKU transformation and a 9:00 PM tag removal in its local time. Its displayed timezone is still unverified against task history, and the verifier does not use those times to infer outcomes. `VERIFIED_COMPLETE` verifies the SKU result only. It does not prove which app performed the change, establish a Master Input binding, or mark a sheet row complete. Reads remain independent of the 4:20–9:10 PM America/Chicago protection for exports and initial SKU writes.
+
 ## Compare a binding with Master Input
 
 Prepare a binding manifest using the IDs verified during Mockupify reconciliation or independently verified in Shopify. The [example manifest](../examples/shopify-readonly-bindings.json) extends the Phase 5 binding with the shop GID and the complete expected variants. Record the physical row, both assigned SKUs, and the Mockupify export reference when available. Use the exact Shopify option names if they differ from `Size` or `Color`. A null expected option value declares that the variant should have no such option.

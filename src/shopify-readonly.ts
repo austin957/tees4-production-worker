@@ -66,7 +66,7 @@ const adjustCandidatesQuery = `query Tees4ReadAdjustCandidates($first: Int!, $af
 const productQuery = `query Tees4ReadProduct($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {
     id title handle status vendor publishedAt tags createdAt updatedAt
-    options { id name optionValues { name } }
+    options { id name position optionValues { name } }
     variants(first: $first, after: $after) {
       nodes { id sku selectedOptions { name value } }
       pageInfo { hasNextPage endCursor }
@@ -105,7 +105,7 @@ export interface ProductRead extends TaggedProduct {
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
-  options: { id: string; name: string; values: string[] }[];
+  options: { id: string; name: string; position: number; values: string[] }[];
   variants: ProductVariantRead[];
 }
 
@@ -382,13 +382,20 @@ export class ShopifyReadonlyClient {
     for (;;) {
       const data = await this.verifiedQuery('product', { id, first: pageSize, after });
       const product = this.productRecord(data, id);
+      const updatedAt = string(product.updatedAt);
+      if (result && result.updatedAt !== updatedAt) {
+        throw new WorkerError('SHOPIFY_PRODUCT_CHANGED', 'Shopify updated the product during variant pagination. Read it again.');
+      }
       result ??= {
         id, title: string(product.title), handle: string(product.handle), vendor: string(product.vendor),
         status: string(product.status), publishedAt: nullableString(product.publishedAt), tags: array(product.tags).map(string),
-        createdAt: string(product.createdAt), updatedAt: string(product.updatedAt),
+        createdAt: string(product.createdAt), updatedAt,
         options: array(product.options).map(value => {
           const option = record(value);
-          return { id: string(option.id), name: string(option.name), values: array(option.optionValues).map(item => string(record(item).name)) };
+          const position = option.position;
+          if (typeof position !== 'number' || !Number.isSafeInteger(position) || position < 1) return invalidResponse();
+          return { id: string(option.id), name: string(option.name), position,
+            values: array(option.optionValues).map(item => string(record(item).name)) };
         }),
         variants: [],
       };

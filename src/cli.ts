@@ -29,6 +29,7 @@ const help = `Tees-4 Production Worker
   effects
   shopify-auth
   shopify-adjust [shopify-product-gid]
+  shopify-hextom-verify <shopify-product-gid> [--verified-base-sku <sku>]
   shopify-identify
   shopify-products
   shopify-product <shopify-product-gid>
@@ -81,7 +82,10 @@ async function main(): Promise<void> {
   }
   const { positionals, values } = parsed;
   if (Object.hasOwn(shopifyCommands, command)) {
-    console.log(JSON.stringify(await runShopifyCommand(command, positionals, values.fixture === true), null, 2));
+    const baseSku = values['verified-base-sku'];
+    const result = await runShopifyCommand(command, positionals, values.fixture === true,
+      typeof baseSku === 'string' ? baseSku : undefined);
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
   const { workflowPath, databasePath, exportMarginMinutes } = settings(process.env);

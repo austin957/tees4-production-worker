@@ -2,6 +2,7 @@ import { integer, object, readJson } from './config.js';
 import { googleSheets, parseSheetPolicy, previewSheetArtwork } from './google-sheets.js';
 import { WorkerError } from './model.js';
 import { readProductionArtwork, simulatedSheets } from './sheets.js';
+import { verifyHextom } from './shopify-hextom.js';
 import { discoverAdjustProducts, summarizeAdjustProduct } from './shopify-adjust.js';
 import { compareShopifyProduct, selectShopifyBinding, shopifyAssignment } from './shopify-comparison.js';
 import { identifyShop, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from './shopify-readonly.js';
@@ -9,6 +10,7 @@ import { identifyShop, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonly
 export const shopifyCommands = {
   'shopify-auth': {},
   'shopify-adjust': {},
+  'shopify-hextom-verify': { 'verified-base-sku': { type: 'string' } },
   'shopify-identify': {},
   'shopify-product': {},
   'shopify-products': {},
@@ -18,7 +20,7 @@ export const shopifyCommands = {
   'shopify-compare': { fixture: { type: 'boolean' } },
 } as const;
 
-export async function runShopifyCommand(command: string, args: string[], fixture: boolean) {
+export async function runShopifyCommand(command: string, args: string[], fixture: boolean, verifiedBaseSku?: string) {
   const comparison = command === 'shopify-preview' || command === 'shopify-compare';
   const noArguments = command === 'shopify-auth' || command === 'shopify-identify' || command === 'shopify-products';
   const count = comparison ? fixture ? 3 : 4 : noArguments ? 0 : 1;
@@ -30,6 +32,7 @@ export async function runShopifyCommand(command: string, args: string[], fixture
   if (command === 'shopify-adjust') {
     return args[0] ? summarizeAdjustProduct(await client.product(args[0])) : discoverAdjustProducts(client);
   }
+  if (command === 'shopify-hextom-verify') return verifyHextom(await client.product(args[0]!), verifiedBaseSku);
   if (command === 'shopify-products') return client.recentProducts();
   if (command === 'shopify-provenance') return client.productProvenance(args[0]!);
   if (!comparison) {
