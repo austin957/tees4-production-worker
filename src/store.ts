@@ -4,8 +4,10 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { integer, object, onlyKeys } from './config.js';
 import type { GarmentCompletionTarget, SheetsCompletionAdapter } from './garment-completion.js';
+import { parseExportEvidence } from './mockupify.js';
+import type { ExportJob, ExportPlan } from './mockupify.js';
 import { completionAction, isProduction, WorkerError } from './model.js';
-import { assertSkuWindow } from './production-schedule.js';
+import { assertExportWindow, assertSkuWindow, ProductionWriteDeferred } from './production-schedule.js';
 import { existingSku, parseShopifyCatalog, resolveProduct } from './shopify-skus.js';
 import type { InitialSkuTarget, ShopifyProduct, ShopifyProductBinding, ShopifySkuAdapter } from './shopify-skus.js';
 import type { Artwork, Details, GarmentCompletion, Job, Mode, StageResult, Workflow, WriteAction } from './model.js';
@@ -48,6 +50,16 @@ export class Store {
           body TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(status, available_at, created_at);
+        CREATE TABLE IF NOT EXISTS mockupify_exports (
+          id TEXT PRIMARY KEY,
+          identity TEXT UNIQUE NOT NULL,
+          export_ref TEXT UNIQUE,
+          body TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mockupify_export_reservations (
+          product_sku TEXT PRIMARY KEY,
+          export_id TEXT NOT NULL REFERENCES mockupify_exports(id)
+        );
         CREATE TABLE IF NOT EXISTS master_input_fixtures (
           row_number INTEGER PRIMARY KEY,
           cells TEXT NOT NULL,
@@ -292,7 +304,8 @@ export class Store {
 
     const product = resolveProduct(this.findShopifyBindings(productSku), artworkSku);
     const bound = { ...report, productId: product.id };
-    if (expectedProductId !== undefined && product.id !== expectedProductId) {
+    if ((expectedProductId !== undefined && product.id !== expectedProductId)
+      || (product.sourceRow !== undefined && product.sourceRow !== sourceRow)) {
       return { ...bound, status: 'needs_review', code: 'PRODUCT_BINDING_CONFLICT' };
     }
     const variants = this.db.prepare('SELECT id, sku FROM shopify_variants WHERE product_id = ? ORDER BY id').all(product.id);
@@ -325,41 +338,155 @@ export class Store {
     };
   }
 
+  getExport(id: string): ExportJob {
+    const row = this.db.prepare('SELECT body FROM mockupify_exports WHERE id = ?').get(id);
+    if (!row) throw new WorkerError('EXPORT_NOT_FOUND', 'No Mockupify export matches that ID.');
+    return JSON.parse(row.body as string) as ExportJob;
+  }
+
+  private saveExport(job: ExportJob): ExportJob {
+    this.db.prepare('UPDATE mockupify_exports SET body = ?, export_ref = ? WHERE id = ?')
+      .run(JSON.stringify(job), job.evidence?.exportRef ?? null, job.id);
+    return job;
+  }
+
+  queueExport(plan: ExportPlan, mode: Mode, now: number): ExportJob {
+    return this.transaction(() => {
+      const identity = JSON.stringify([mode, plan.artworkSku]);
+      const row = this.db.prepare('SELECT body FROM mockupify_exports WHERE identity = ?').get(identity);
+      const previous = row ? JSON.parse(row.body as string) as ExportJob : undefined;
+      if (previous && JSON.stringify(previous.plan) === JSON.stringify(plan)) return previous;
+      if (previous && mode === 'simulate' && !previous.plan.issues.length) {
+        throw new WorkerError('EXPORT_PLAN_CONFLICT', 'This artwork already has a different export plan.');
+      }
+      const status = plan.issues.length ? 'needs_review' : mode === 'dry-run' ? 'planned' : 'queued';
+      const job: ExportJob = { id: previous?.id ?? randomUUID(), mode, plan, status, availableAt: now };
+      if (previous) {
+        this.saveExport(job);
+      } else {
+        this.db.prepare('INSERT INTO mockupify_exports (id, identity, body) VALUES (?, ?, ?)')
+          .run(job.id, identity, JSON.stringify(job));
+      }
+      if (status === 'queued') {
+        for (const garment of plan.products) {
+          const reserved = this.db.prepare('SELECT export_id FROM mockupify_export_reservations WHERE product_sku = ?')
+            .get(garment.productSku);
+          if (reserved || this.findShopifyBindings(garment.productSku).length) {
+            throw new WorkerError('EXPORT_PRODUCT_CONFLICT', 'A Product SKU is already bound or reserved for export.');
+          }
+          this.db.prepare('INSERT INTO mockupify_export_reservations (product_sku, export_id) VALUES (?, ?)')
+            .run(garment.productSku, job.id);
+        }
+      }
+      return job;
+    });
+  }
+
+  beginExport(id: string, clock: () => number, marginMinutes: number | undefined): boolean {
+    return this.transaction(() => {
+      const job = this.getExport(id);
+      if (job.mode !== 'simulate' || !['queued', 'deferred'].includes(job.status) || job.availableAt > clock()) return false;
+      if (job.plan.products.some(row => this.findShopifyBindings(row.productSku).length)) {
+        this.saveExport({ ...job, status: 'needs_review', code: 'EXPORT_PRODUCT_CONFLICT' });
+        return false;
+      }
+      try {
+        assertExportWindow(clock(), marginMinutes);
+      } catch (error) {
+        if (!(error instanceof ProductionWriteDeferred)) throw error;
+        this.saveExport({ ...job, status: 'deferred', availableAt: error.retryAt, code: error.code });
+        return false;
+      }
+      // Commit an irreversible dispatch claim before allowing the adapter to perform work.
+      this.saveExport({ id, mode: job.mode, plan: job.plan, status: 'dispatching', availableAt: clock() });
+      return true;
+    });
+  }
+
+  deferExportBeforeDispatch(id: string, error: ProductionWriteDeferred): ExportJob {
+    return this.transaction(() => {
+      const job = this.getExport(id);
+      if (job.status !== 'dispatching') return job;
+      return this.saveExport({ ...job, status: 'deferred', availableAt: error.retryAt, code: error.code });
+    });
+  }
+
+  markExportUncertain(id: string, code: string): ExportJob {
+    return this.transaction(() => {
+      const job = this.getExport(id);
+      if (job.status !== 'dispatching' && job.status !== 'uncertain') return job;
+      return this.saveExport({ ...job, status: 'uncertain', code });
+    });
+  }
+
+  recordExportEvidence(id: string, input: unknown): ExportJob {
+    return this.transaction(() => {
+      const job = this.getExport(id);
+      if (job.mode !== 'simulate' || !['dispatching', 'uncertain', 'completed'].includes(job.status)) {
+        throw new WorkerError('EXPORT_NOT_RECONCILABLE', 'Only a dispatched export can accept reconciliation evidence.');
+      }
+      const { correlationId, exportRef, bindings } = parseExportEvidence(input, job);
+      const owner = this.db.prepare('SELECT id FROM mockupify_exports WHERE export_ref = ?').get(exportRef);
+      if ((job.evidence && job.evidence.exportRef !== exportRef) || (owner && owner.id !== id)) {
+        throw new WorkerError('EXPORT_BINDING_CONFLICT', 'The Mockupify export reference does not match this dispatch.');
+      }
+      const merged = new Map(job.evidence?.bindings.map(binding => [binding.sourceRow, binding]));
+      for (const binding of bindings) {
+        const existing = merged.get(binding.sourceRow);
+        if ((existing && JSON.stringify(existing) !== JSON.stringify(binding))
+          || this.findShopifyBindings(binding.product.productSku).some(product => product.id !== binding.product.id)) {
+          throw new WorkerError('EXPORT_BINDING_CONFLICT', 'An exported garment already has a conflicting Shopify binding.');
+        }
+        merged.set(binding.sourceRow, binding);
+      }
+      this.insertShopifyFixtures(bindings.map(binding => binding.product));
+      const evidence = { correlationId, exportRef, bindings: [...merged.values()].sort((a, b) => a.sourceRow - b.sourceRow) };
+      const { code: _, ...state } = job;
+      return this.saveExport(merged.size === job.plan.products.length
+        ? { ...state, status: 'completed', evidence }
+        : { ...state, status: 'uncertain', code: 'PARTIAL_EXPORT_EVIDENCE', evidence });
+    });
+  }
+
   importShopifyFixtures(input: unknown): number {
     const products = parseShopifyCatalog(input);
-    return this.transaction(() => {
-      let imported = 0;
-      for (const product of products) {
-        const baseline = JSON.stringify(product);
-        const row = this.db.prepare('SELECT fixture FROM shopify_products WHERE id = ?').get(product.id);
-        if (row) {
-          if (row.fixture !== baseline) {
-            throw new WorkerError('FIXTURE_CONFLICT', 'An existing Shopify product fixture differs from this import.');
-          }
-          continue;
+    return this.transaction(() => this.insertShopifyFixtures(products));
+  }
+
+  private insertShopifyFixtures(products: ShopifyProduct[]): number {
+    let imported = 0;
+    for (const product of products) {
+      const baseline = JSON.stringify(product);
+      const row = this.db.prepare('SELECT fixture FROM shopify_products WHERE id = ?').get(product.id);
+      if (row) {
+        if (row.fixture !== baseline) {
+          throw new WorkerError('FIXTURE_CONFLICT', 'An existing Shopify product fixture differs from this import.');
         }
-        this.db.prepare('INSERT INTO shopify_products (id, artwork_sku, product_sku, fixture) VALUES (?, ?, ?, ?)')
-          .run(product.id, product.artworkSku, product.productSku, baseline);
-        for (const variant of product.variants) {
-          if (this.db.prepare('SELECT id FROM shopify_variants WHERE id = ?').get(variant.id)) {
-            throw new WorkerError('FIXTURE_CONFLICT', 'A Shopify variant ID is already registered to a product.');
-          }
-          this.db.prepare('INSERT INTO shopify_variants (id, product_id, size, color, sku) VALUES (?, ?, ?, ?, ?)')
-            .run(variant.id, product.id, variant.size, variant.color, variant.sku);
-        }
-        imported += 1;
+        continue;
       }
-      return imported;
-    });
+      this.db.prepare('INSERT INTO shopify_products (id, artwork_sku, product_sku, fixture) VALUES (?, ?, ?, ?)')
+        .run(product.id, product.artworkSku, product.productSku, baseline);
+      for (const variant of product.variants) {
+        if (this.db.prepare('SELECT id FROM shopify_variants WHERE id = ?').get(variant.id)) {
+          throw new WorkerError('FIXTURE_CONFLICT', 'A Shopify variant ID is already registered to a product.');
+        }
+        this.db.prepare('INSERT INTO shopify_variants (id, product_id, size, color, sku) VALUES (?, ?, ?, ?, ?)')
+          .run(variant.id, product.id, variant.size, variant.color, variant.sku);
+      }
+      imported += 1;
+    }
+    return imported;
   }
 
   private findShopifyBindings(productSku: string): ShopifyProductBinding[] {
     return this.db.prepare(`
-      SELECT id, artwork_sku, json_extract(fixture, '$.mockupifyExportRef') AS export_ref
+      SELECT id, artwork_sku, json_extract(fixture, '$.mockupifyExportRef') AS export_ref,
+        json_extract(fixture, '$.sourceRow') AS source_row
       FROM shopify_products WHERE product_sku = ? ORDER BY id
     `).all(productSku).map(row => ({
       id: row.id as string, artworkSku: row.artwork_sku as string, productSku,
       ...(typeof row.export_ref === 'string' ? { mockupifyExportRef: row.export_ref } : {}),
+      ...(typeof row.source_row === 'number' ? { sourceRow: row.source_row } : {}),
     }));
   }
 

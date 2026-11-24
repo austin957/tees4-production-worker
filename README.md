@@ -59,3 +59,7 @@ The [Google Sheets intake guide](docs/google-sheets.md) covers read-only authori
 ## Phase 4 garment completion
 
 The [garment completion guide](docs/garment-completion.md) shows how to simulate a Master Input column I update and inspect independent results for each garment.
+
+## Phase 5 Mockupify export preparation
+
+The [Mockupify guide](docs/mockupify.md) explains template and color mapping, the simulated export queue, Shopify ID capture, and how to reconcile an uncertain export.

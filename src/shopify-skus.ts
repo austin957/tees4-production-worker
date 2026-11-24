@@ -1,4 +1,4 @@
-import { object, onlyKeys, requiredText } from './config.js';
+import { integer, object, onlyKeys, requiredText } from './config.js';
 import { WorkerError } from './model.js';
 import { assertSkuWindow } from './production-schedule.js';
 import type { Mode, ProductionArtwork, StageResult } from './model.js';
@@ -15,6 +15,7 @@ export interface ShopifyProductBinding {
   artworkSku: string;
   productSku: string;
   mockupifyExportRef?: string;
+  sourceRow?: number;
 }
 
 export interface ShopifyProduct extends ShopifyProductBinding {
@@ -44,7 +45,7 @@ export function parseShopifyCatalog(input: unknown): ShopifyProduct[] {
   const variantIds = new Set<string>();
   return input.map((entry: unknown) => {
     const raw = object(entry, 'Shopify product');
-    onlyKeys(raw, ['id', 'artworkSku', 'productSku', 'mockupifyExportRef', 'variants'], 'Shopify product');
+    onlyKeys(raw, ['id', 'artworkSku', 'productSku', 'mockupifyExportRef', 'sourceRow', 'variants'], 'Shopify product');
     const id = requiredText(raw.id, 'Shopify product ID');
     if (productIds.has(id)) throw new WorkerError('DUPLICATE_ID', 'Shopify product IDs must be unique.');
     productIds.add(id);
@@ -74,6 +75,9 @@ export function parseShopifyCatalog(input: unknown): ShopifyProduct[] {
       productSku: requiredText(raw.productSku, 'Product SKU binding'),
       ...(raw.mockupifyExportRef === undefined ? {} : {
         mockupifyExportRef: requiredText(raw.mockupifyExportRef, 'Mockupify export reference'),
+      }),
+      ...(raw.sourceRow === undefined ? {} : {
+        sourceRow: integer(raw.sourceRow, 'Shopify binding source row', 1, Number.MAX_SAFE_INTEGER),
       }),
       variants: variants.sort((left, right) => left.id < right.id ? -1 : Number(left.id > right.id)),
     };

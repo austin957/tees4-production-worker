@@ -11,6 +11,7 @@
 - Assign initial Shopify SKUs only to blank variants. Preserve every existing nonblank SKU, flag unexpected values for review, and stop on ambiguous product bindings.
 - Complete each garment independently. The simulated Sheets writer may set only blank column I on a physical Master Input row verified by its H and K SKUs, after confirming every variant on the bound Shopify product ID has exactly the column H SKU. Preserve TeeInBlue and Flash Transfers statuses.
 - Stop and surface missing or conflicting required information. Record business rules only when the owner has documented them. Label fixture conventions as such.
+- Use vendor-documented Mockupify interfaces. Keep export adapters simulated until a supervised live test is authorized. Persist the dispatch claim before starting an export and reconcile uncertain outcomes with trusted export and Shopify ID evidence before any repeat attempt. Never match an exported product by title alone.
 - Preserve completed checkpoints and stable write identities across retries. Cover approval, duplicate prevention, and recovery when changing queue or adapter behavior.
 - Use ignored local storage for queue databases. Keep fixture data synthetic and avoid logging raw adapter exceptions or secrets.
 - Keep pull requests in draft when requested. Publication, deployment, and merge require separate authorization.

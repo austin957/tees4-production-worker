@@ -1,8 +1,10 @@
 import { parseArgs } from 'node:util';
 import type { ParseArgsConfig } from 'node:util';
 import { simulatedAdapters } from './adapters.js';
-import { object, onlyKeys, readJson, settings } from './config.js';
+import { object, onlyKeys, parseMode, readJson, settings } from './config.js';
 import { googleSheets, parseSheetPolicy, previewSheetArtwork } from './google-sheets.js';
+import { runMockupifyExport } from './export-runner.js';
+import { planMockupifyExport, simulatedMockupifyExports } from './mockupify.js';
 import { asWorkerError, WorkerError } from './model.js';
 import { readProductionArtwork, simulatedSheets } from './sheets.js';
 import { Store } from './store.js';
@@ -15,6 +17,10 @@ const help = `Tees-4 Production Worker
   submit-google-sheet <artwork-selection.json> <policy.json>
   load-shopify-fixture <shopify-fixture.json>
   load-sheet-fixture <sheet-fixture.json>
+  queue-export <sheet-fixture.json> <mockupify-mapping.json> [--mode dry-run|simulate]
+  run-export <export-id>
+  inspect-export <export-id>
+  reconcile-export <export-id> <verified-evidence.json>
   run [--limit <count>] [--fail-after-create]
   list
   inspect <job-id>
@@ -45,6 +51,10 @@ async function main(): Promise<void> {
     'submit-google-sheet': {},
     'load-shopify-fixture': {},
     'load-sheet-fixture': {},
+    'queue-export': { mode: { type: 'string' } },
+    'run-export': {},
+    'inspect-export': {},
+    'reconcile-export': {},
     run: { limit: { type: 'string' }, 'fail-after-create': { type: 'boolean' } },
     approve: { by: { type: 'string' } },
     list: {}, inspect: {}, effects: {},
@@ -100,9 +110,10 @@ async function main(): Promise<void> {
         output = { duplicate: result.duplicate, ...report(result.job) };
         break;
       }
+      case 'queue-export':
       case 'load-sheet-fixture':
       case 'submit-sheet': {
-        positional(positionals, 1);
+        positional(positionals, command === 'queue-export' ? 2 : 1);
         const fixture = object(readJson(positionals[0]!, 'sheet fixture'), 'Sheet fixture');
         onlyKeys(fixture, ['artwork', 'rows'], 'Sheet fixture');
         if (command === 'load-sheet-fixture') {
@@ -110,6 +121,11 @@ async function main(): Promise<void> {
           break;
         }
         const artwork = await readProductionArtwork(fixture.artwork, simulatedSheets(fixture.rows));
+        if (command === 'queue-export') {
+          const plan = planMockupifyExport(artwork, readJson(positionals[1]!, 'Mockupify mapping'));
+          output = store.queueExport(plan, parseMode(values.mode ?? 'dry-run'), Date.now());
+          break;
+        }
         const result = worker.submit(artwork, readJson(workflowPath, 'workflow'), values.mode);
         output = { duplicate: result.duplicate, ...report(result.job) };
         break;
@@ -122,6 +138,18 @@ async function main(): Promise<void> {
       case 'load-shopify-fixture':
         positional(positionals, 1);
         output = { imported: store.importShopifyFixtures(readJson(positionals[0]!, 'Shopify fixture')) };
+        break;
+      case 'run-export':
+        positional(positionals, 1);
+        output = await runMockupifyExport(store, positionals[0]!, simulatedMockupifyExports(), Date.now, exportMarginMinutes);
+        break;
+      case 'inspect-export':
+        positional(positionals, 1);
+        output = store.getExport(positionals[0]!);
+        break;
+      case 'reconcile-export':
+        positional(positionals, 2);
+        output = store.recordExportEvidence(positionals[0]!, readJson(positionals[1]!, 'verified export evidence'));
         break;
       case 'run': {
         positional(positionals, 0);
