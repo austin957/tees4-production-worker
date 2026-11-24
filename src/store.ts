@@ -3,7 +3,8 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { isProduction, WorkerError } from './model.js';
-import { assertSkuWindow, existingSku, parseShopifyCatalog, resolveProduct } from './shopify-skus.js';
+import { assertSkuWindow } from './production-schedule.js';
+import { existingSku, parseShopifyCatalog, resolveProduct } from './shopify-skus.js';
 import type { InitialSkuTarget, ShopifyProduct, ShopifyProductBinding, ShopifySkuAdapter } from './shopify-skus.js';
 import type { Artwork, Details, Job, Mode, StageResult, Workflow, WriteAction } from './model.js';
 
@@ -291,7 +292,7 @@ export class Store {
   }
 
   applyEffect(
-    key: string, action: WriteAction, request: Details, apply: () => Details,
+    key: string, action: WriteAction, request: Details, apply: () => Details, beforeWrite?: () => void,
   ): Effect {
     return this.transaction(() => {
       const payload = JSON.stringify(request);
@@ -303,8 +304,10 @@ export class Store {
         return { details: JSON.parse(row.details as string) as Details, reused: true };
       }
       const details = apply();
-      this.db.prepare('INSERT INTO effects (key, action, request, details) VALUES (?, ?, ?, ?)')
-        .run(key, action, payload, JSON.stringify(details));
+      const insert = this.db.prepare('INSERT INTO effects (key, action, request, details) VALUES (?, ?, ?, ?)');
+      const serialized = JSON.stringify(details);
+      beforeWrite?.();
+      insert.run(key, action, payload, serialized);
       return { details, reused: false };
     });
   }

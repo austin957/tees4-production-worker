@@ -29,7 +29,7 @@ Preview makes no queue changes. Submission re-reads the sheet and queues only a 
 
 The existing local catalog stores one binding from the assigned Artwork SKU and Product SKU to an explicit Shopify product ID, plus the individual Shopify variant IDs and size/color pairs. A binding can carry the opaque `mockupifyExportRef` supplied after a future export. The simulator can already persist this field on fixture import. It rejects a changed fixture for an existing ID, preserves simulated SKU updates on re-import, and stops if a SKU resolves to multiple products. There is no automated export or discovery of product IDs in this phase.
 
-Unexpected nonblank variant SKUs are preserved and flagged as `UNEXPECTED_VARIANT_SKU`, with the product ID, variant ID, and observed value. Jobs with a flagged variant finish as `needs_review`. Existing Hextom values are not interpreted. The daily 5–9 PM America/Chicago protection and blank-only simulated writes continue to apply.
+Unexpected nonblank variant SKUs are preserved and flagged as `UNEXPECTED_VARIANT_SKU`, with the product ID, variant ID, and observed value. Jobs with a flagged variant finish as `needs_review`. Existing Hextom values are not interpreted. The daily 4:20–9:10 PM America/Chicago protection and blank-only simulated writes continue to apply.
 
 ## Open integration decisions
 

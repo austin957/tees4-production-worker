@@ -17,6 +17,7 @@ const workflow = {
   retryDelayMs: 50,
 };
 const gate = 'approve-publication';
+const morning = Date.parse('2026-07-11T15:00:00Z');
 
 function fixture(t: TestContext) {
   const path = mkdtempSync(join(tmpdir(), 'tees4-test-'));
@@ -59,8 +60,11 @@ test('CLI recovers a timeout after creating a product across separate invocation
   const config = join(path, 'workflow.json');
   writeFileSync(config, JSON.stringify({ ...workflow, retryDelayMs: 0 }));
   const exec = (...args: string[]) => {
-    const result = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', 'dist/src/cli.js', ...args], {
-      encoding: 'utf8', env: { ...process.env, TEES4_CONFIG: config, TEES4_DATABASE: database },
+    const result = spawnSync(process.execPath, [
+      '--disable-warning=ExperimentalWarning', '--import', `data:text/javascript,Date.now=()=>${morning}`, 'dist/src/cli.js', ...args,
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, TEES4_CONFIG: config, TEES4_DATABASE: database, TEES4_MOCKUPIFY_EXPORT_MARGIN_MINUTES: '1' },
     });
     assert.equal(result.status, 0, result.stderr);
     return JSON.parse(result.stdout);
@@ -95,16 +99,16 @@ test('expired stage leases are recovered and stale checkpoints are fenced', asyn
   const { store, database } = fixture(t);
   const second = new Store(database);
   t.after(() => second.close());
-  let now = 1000;
+  let now = morning;
   const adapters = simulatedAdapters(store);
-  const worker = new Worker(store, adapters, undefined, () => now);
+  const worker = new Worker(store, adapters, undefined, () => now, undefined, 1);
   const { job } = worker.submit(artwork, workflow, 'simulate');
   await worker.runAvailable(5);
   const claim = store.claim(now);
   assert.ok(claim);
   assert.equal(claim.job.workflow.stages[claim.job.nextStage]?.id, 'create-product-draft');
   assert.ok(!isProduction(claim.job.artwork));
-  await writeAction(adapters, 'shopify.create', claim.job.artwork);
+  await writeAction(adapters, 'shopify.create', claim.job.artwork, () => assert.fail('Draft creation called the export guard'));
   assert.equal(second.claim(now), undefined);
 
   now += workflow.leaseMs;
@@ -120,10 +124,10 @@ test('expired stage leases are recovered and stale checkpoints are fenced', asyn
 
 test('retry delays and attempt limits persist without rerunning completed stages', async t => {
   const { store } = fixture(t);
-  let now = 1000;
+  let now = morning;
   const adapters = simulatedAdapters(store);
   adapters.mockupify.generate = async () => { throw new WorkerError('TEMPORARY', 'Simulated service unavailable.', true); };
-  const worker = new Worker(store, adapters, undefined, () => now);
+  const worker = new Worker(store, adapters, undefined, () => now, undefined, 1);
   const { job } = worker.submit(artwork, { ...workflow, maxAttempts: 2 }, 'simulate');
   await worker.runAvailable();
   const waiting = store.get(job.id);
@@ -141,7 +145,7 @@ test('retry delays and attempt limits persist without rerunning completed stages
 test('missing information, source mismatches and conflicting products stop processing', async t => {
   const { store } = fixture(t);
   const adapters = simulatedAdapters(store);
-  const worker = new Worker(store, adapters);
+  const worker = new Worker(store, adapters, undefined, () => morning, undefined, 1);
   assert.throws(() => worker.submit({ ...artwork, designerId: '' }, workflow), { code: 'INVALID_INPUT' });
   assert.equal(store.list().length, 0);
   const { job } = worker.submit(artwork, workflow, 'simulate');

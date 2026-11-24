@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     throw new WorkerError('CLI_USAGE', error instanceof Error ? error.message : 'Invalid command options.');
   }
   const { positionals, values } = parsed;
-  const { workflowPath, databasePath } = settings(process.env);
+  const { workflowPath, databasePath, exportMarginMinutes } = settings(process.env);
   let selectedArtwork;
   if (command === 'preview-google-sheet' || command === 'submit-google-sheet') {
     positional(positionals, 2);
@@ -87,7 +87,9 @@ async function main(): Promise<void> {
         return result;
       };
     }
-    const worker = new Worker(store, adapters, entry => console.error(JSON.stringify(entry)));
+    const worker = new Worker(
+      store, adapters, entry => console.error(JSON.stringify(entry)), Date.now, undefined, exportMarginMinutes,
+    );
     let output: unknown;
     switch (command) {
       case 'submit': {

@@ -15,7 +15,10 @@ type Write = (request: WriteRequest) => Promise<WriteResult>;
 
 export interface GoogleDriveAdapter { readArtwork: Read }
 export interface LegacySheetsAdapter { readAssignment: Read }
-export interface MockupifyAdapter { generate: Write }
+export interface MockupifyAdapter {
+  // A new export must pass beforeExport immediately before dispatch. Receipt lookup is read-only.
+  generate(request: WriteRequest, beforeExport: () => void): Promise<WriteResult>;
+}
 export interface ShopifyAdapter { create: Write; publish: Write }
 export interface TeeInBlueAdapter { readDesign: Read }
 export interface FlashTransfersAdapter { readProduct: Read }
@@ -42,9 +45,9 @@ export function simulatedAdapters(store: Store): Adapters {
     flashTransfers: { readProduct: async artwork => ({ sku: artwork.sku }) },
     designEngine: { readDesign: async artwork => ({ artworkId: artwork.artworkId }) },
     mockupify: {
-      generate: async ({ artwork, key }) => store.applyEffect(key, 'mockupify.generate', { ...artwork }, () => ({
+      generate: async ({ artwork, key }, beforeExport) => store.applyEffect(key, 'mockupify.generate', { ...artwork }, () => ({
         mockupRef: `fixture://mockupify/${encodeURIComponent(artwork.artworkId)}/${encodeURIComponent(artwork.sku)}`,
-      })),
+      }), beforeExport),
     },
     shopify: {
       create: async ({ artwork, key }) => store.applyEffect(key, 'shopify.create', { ...artwork }, () => ({
@@ -78,10 +81,12 @@ export function readAction(adapters: Adapters, action: ReadAction, artwork: Read
   }
 }
 
-export function writeAction(adapters: Adapters, action: WriteAction, artwork: Readonly<LegacyArtwork>): Promise<WriteResult> {
+export function writeAction(
+  adapters: Adapters, action: WriteAction, artwork: Readonly<LegacyArtwork>, beforeExport: () => void,
+): Promise<WriteResult> {
   const request = { artwork, key: effectKey(action, artwork) };
   switch (action) {
-    case 'mockupify.generate': return adapters.mockupify.generate(request);
+    case 'mockupify.generate': return adapters.mockupify.generate(request, beforeExport);
     case 'shopify.create': return adapters.shopify.create(request);
     case 'shopify.publish': return adapters.shopify.publish(request);
   }

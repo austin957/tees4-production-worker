@@ -10,7 +10,7 @@ import { simulatedAdapters } from '../src/adapters.js';
 import { readJson } from '../src/config.js';
 import { WorkerError } from '../src/model.js';
 import { masterInput, readProductionArtwork, simulatedSheets } from '../src/sheets.js';
-import { parseShopifyCatalog, protectedUntil } from '../src/shopify-skus.js';
+import { parseShopifyCatalog } from '../src/shopify-skus.js';
 import { Store } from '../src/store.js';
 import { Worker } from '../src/worker.js';
 
@@ -191,32 +191,16 @@ test('recovers a partial write and preserves a final SKU written between attempt
   }
 });
 
-test('Chicago protection uses inclusive 5 PM and exclusive 9 PM across CST and CDT', () => {
-  for (const [start, end] of [
-    ['2026-01-11T23:00:00Z', '2026-01-12T03:00:00Z'],
-    ['2026-07-11T22:00:00Z', '2026-07-12T02:00:00Z'],
-    ['2026-03-08T22:00:00Z', '2026-03-09T02:00:00Z'],
-    ['2026-11-01T23:00:00Z', '2026-11-02T03:00:00Z'],
-  ]) {
-    const from = Date.parse(start!);
-    const until = Date.parse(end!);
-    assert.equal(protectedUntil(from - 1), undefined);
-    assert.equal(protectedUntil(from), until);
-    assert.equal(protectedUntil(until - 1), until);
-    assert.equal(protectedUntil(until), undefined);
-  }
-});
-
 test('rechecks protection at the write and reschedules without consuming a retry', async t => {
   const { store, artwork, adapter } = await setup(t);
-  const startsAt = Date.parse('2026-07-11T22:00:00Z');
-  const endsAt = Date.parse('2026-07-12T02:00:00Z');
+  const startsAt = Date.parse('2026-07-11T21:20:00Z');
+  const endsAt = Date.parse('2026-07-12T02:10:00Z');
   let now = startsAt - 1;
   let calls = 0;
   const delayed = {
     ...adapter,
     assignInitialSku: async (...args: Parameters<typeof adapter.assignInitialSku>) => {
-      if (++calls === 1) now = startsAt;
+      if (++calls === 2) now = startsAt;
       return adapter.assignInitialSku(...args);
     },
   };
@@ -228,13 +212,14 @@ test('rechecks protection at the write and reschedules without consuming a retry
   assert.equal(wait.failures, 0);
   assert.equal(wait.availableAt, endsAt);
   assert.equal(wait.history.at(-1)?.code, 'HEXTOM_WINDOW');
-  assert.equal((await adapter.findProducts('000710'))[0]?.variants[0]?.sku, null);
+  assert.deepEqual((await adapter.findProducts('000710'))[0]?.variants.slice(0, 2).map(variant => variant.sku), ['000710', null]);
   now = endsAt - 1;
   assert.deepEqual(await worker.runAvailable(), { processed: 0, failed: [] });
   now = endsAt;
   await worker.runAvailable();
-  assert.equal(store.get(job.id).status, 'needs_review');
-  assert.equal((await adapter.findProducts('000710'))[0]?.variants[0]?.sku, '000710');
+  const resumed = store.get(job.id);
+  assert.equal(resumed.status, 'needs_review');
+  assert.deepEqual(resumed.results[1]?.skuAssignments?.slice(0, 2).map(variant => variant.outcome), ['already_assigned', 'assigned']);
 });
 
 test('preserves immutable export provenance and existing IDs during dry-run', async t => {

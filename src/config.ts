@@ -110,8 +110,14 @@ export function parseWorkflow(input: unknown): Workflow {
   };
 }
 
-export function settings(env: NodeJS.ProcessEnv): { workflowPath: string; databasePath: string } {
+export function settings(env: NodeJS.ProcessEnv) {
+  const margin = env.TEES4_MOCKUPIFY_EXPORT_MARGIN_MINUTES;
+  const exportMarginMinutes = margin === undefined ? undefined : integer(
+    /^\d+$/.test(margin) ? Number(margin) : NaN,
+    'TEES4_MOCKUPIFY_EXPORT_MARGIN_MINUTES', 1, Number.MAX_SAFE_INTEGER,
+  );
   return {
+    exportMarginMinutes,
     workflowPath: resolve(requiredText(env.TEES4_CONFIG ?? 'examples/workflow.json', 'TEES4_CONFIG')),
     databasePath: resolve(requiredText(env.TEES4_DATABASE ?? '.tees4/worker.sqlite', 'TEES4_DATABASE')),
   };

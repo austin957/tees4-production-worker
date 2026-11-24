@@ -1,5 +1,6 @@
 import { object, onlyKeys, requiredText } from './config.js';
 import { WorkerError } from './model.js';
+import { assertSkuWindow } from './production-schedule.js';
 import type { Mode, ProductionArtwork, StageResult } from './model.js';
 
 export interface ShopifyVariant {
@@ -87,30 +88,6 @@ export function resolveProduct<T extends Pick<ShopifyProduct, 'artworkSku'>>(can
     throw new WorkerError('PRODUCT_BINDING_CONFLICT', 'The Shopify product binding belongs to another Artwork SKU.');
   }
   return product;
-}
-
-const centralTime = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/Chicago', hourCycle: 'h23', hour: '2-digit', minute: '2-digit',
-});
-
-export function protectedUntil(now: number): number | undefined {
-  const parts = centralTime.formatToParts(now);
-  const hour = Number(parts.find(part => part.type === 'hour')?.value);
-  const minute = Number(parts.find(part => part.type === 'minute')?.value);
-  if (hour < 17 || hour >= 21) return undefined;
-  // The interval is within a single Central evening, outside the DST transition hours.
-  return Math.floor(now / 60_000) * 60_000 + (60 * (21 - hour) - minute) * 60_000;
-}
-
-export class SkuWriteDeferred extends WorkerError {
-  constructor(readonly retryAt: number) {
-    super('HEXTOM_WINDOW', 'Initial SKU writes are deferred until 9:00 PM America/Chicago.');
-  }
-}
-
-export function assertSkuWindow(now: number): void {
-  const until = protectedUntil(now);
-  if (until !== undefined) throw new SkuWriteDeferred(until);
 }
 
 export function existingSku(sku: string | null, expected: string): ExistingSkuResult | undefined {

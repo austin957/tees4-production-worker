@@ -24,7 +24,7 @@ Every blank variant of an unambiguously matched product receives the exact value
 
 The simulator checks the binding and current variant SKU inside a SQLite transaction before updating any blank variant. If a job stops partway through, the next attempt reads current values and continues with blank variants. The fixture importer is idempotent and preserves simulated updates when the original fixture is imported again.
 
-The initial write window is protected daily from **5:00 PM inclusive to 9:00 PM exclusive America/Chicago**, including Central daylight time. A blocked job becomes eligible at 9:00 PM Central without using its retry budget. Run the worker again after the reported retry time. Dry-run reports planned and preserved variants without mutating them.
+The initial write window is protected daily from **4:20 PM inclusive to 9:10 PM exclusive America/Chicago**, including Central daylight time. A blocked job becomes eligible at 9:10 PM Central without using its retry budget. Run the worker again after the reported retry time. Dry-run reports planned and preserved variants without mutating them.
 
 ## Simulate a sheet-backed job
 

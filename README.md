@@ -40,6 +40,7 @@ The final report shows `completed` and three `planned` stages. The effects comma
 | --- | --- | --- |
 | `TEES4_CONFIG` | `examples/workflow.json` | Workflow JSON used when submitting new jobs |
 | `TEES4_DATABASE` | `.tees4/worker.sqlite` | Local queue and simulated effect database |
+| `TEES4_MOCKUPIFY_EXPORT_MARGIN_MINUTES` | Unset | Positive whole-minute safety margin required to start a new simulated Mockupify export |
 
 Relative paths are resolved from the current working directory. Repeat `run` after a retry becomes due or after approving a gate. The command processes currently eligible stages and exits. Use `--limit N` to cap the number of stage claims, and `--mode simulate` on submission to exercise simulated writes. Only the simulated adapters are registered in the CLI. Execution logs are newline-delimited JSON on stderr. Commands emit JSON results on stdout and return a nonzero status for command errors or terminal failures encountered by `run`.
 

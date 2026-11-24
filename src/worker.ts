@@ -4,7 +4,8 @@ import { parseMode, parseWorkflow } from './config.js';
 import { asWorkerError, isProduction, isWrite, skuAction, WorkerError } from './model.js';
 import type { Job, StageResult } from './model.js';
 import { parseJobArtwork } from './sheets.js';
-import { assignSkus, protectedUntil, SkuWriteDeferred } from './shopify-skus.js';
+import { assertExportWindow, ProductionWriteDeferred, protectedUntil } from './production-schedule.js';
+import { assignSkus } from './shopify-skus.js';
 import type { ShopifySkuAdapter } from './shopify-skus.js';
 import type { Store } from './store.js';
 
@@ -26,6 +27,7 @@ export class Worker {
     private readonly log: Logger = () => {},
     private readonly clock: () => number = Date.now,
     private readonly shopifySkus: ShopifySkuAdapter = store.shopifySkuAdapter(),
+    private readonly exportMarginMinutes?: number,
   ) {}
 
   submit(input: unknown, workflow: unknown, mode: unknown = 'dry-run'): { job: Job; duplicate: boolean } {
@@ -81,7 +83,7 @@ export class Worker {
       try {
         result = await this.execute(job);
       } catch (caught) {
-        if (caught instanceof SkuWriteDeferred) {
+        if (caught instanceof ProductionWriteDeferred) {
           const updated = this.store.defer(claim, stage.id, caught, caught.retryAt, this.clock());
           this.emit(job, updated ? 'write_deferred' : 'lease_lost', stage.id, caught);
           continue;
@@ -136,7 +138,9 @@ export class Worker {
 
     if (job.mode === 'dry-run') return { stageId, outcome: 'planned', details: { action, sku: job.artwork.sku } };
     if (job.mode !== 'simulate') throw new WorkerError('INVALID_MODE', 'No write-capable mode was selected.');
-    const written = await writeAction(this.adapters, action, job.artwork);
+    const written = await writeAction(this.adapters, action, job.artwork, () => {
+      assertExportWindow(this.clock(), this.exportMarginMinutes);
+    });
     return { stageId, outcome: written.reused ? 'reused' : 'applied', details: written.details };
   }
 }
