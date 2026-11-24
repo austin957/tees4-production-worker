@@ -36,7 +36,7 @@ Independently check the physical row and exact H/K values plus the Shopify produ
 
 Pass the file with `--confirmations`. This is an explicit owner attestation. The worker validates the current live row and exact SKUs, the configured shop and current Shopify product GID, and the complete unique variant IDs. It refuses proposals for missing rows or conflicting or repeated assignments. A product explicitly confirmed by GID may be re-read after Hextom has removed its tag. Successful results return an `OWNER_REVIEW_REQUIRED` binding proposal in JSON. Keep owner files in approved local storage. The command neither saves a permanent binding nor changes Shopify, Sheets or Hextom.
 
-For a future approved assignment workflow, persist reviewed bindings in a registry with unique shop/product and sheet/row keys. Re-read that binding and the current SKU immediately before any write. Require explicit write approval, preserve every nonblank SKU, and enforce the 4:20–9:10 PM America/Chicago protected window. This command performs reads and produces proposals only.
+Use the [product binding registry](product-bindings.md) to persist a reviewed assignment and its approval history. The matching command performs reads and produces proposals only.
 
 ## Connect Google Sheets securely
 

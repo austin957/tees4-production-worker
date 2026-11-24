@@ -6,6 +6,7 @@ import { googleSheets, parseSheetPolicy, previewSheetArtwork } from './google-sh
 import { runMockupifyExport } from './export-runner.js';
 import { planMockupifyExport, simulatedMockupifyExports } from './mockupify.js';
 import { asWorkerError, WorkerError } from './model.js';
+import { bindingCommands, runBindingCommand } from './product-binding-cli.js';
 import { readProductionArtwork, simulatedSheets } from './sheets.js';
 import { runShopifyCommand, shopifyCommands } from './shopify-cli.js';
 import { Store } from './store.js';
@@ -27,6 +28,12 @@ const help = `Tees-4 Production Worker
   inspect <job-id>
   approve <job-id> <stage-id> --by <approver>
   effects
+  binding-list
+  binding-inspect <binding-id>
+  binding-propose <assignment.json> --by <operator>
+  binding-review <binding-id> approve --by <owner> --source <evidence-ref> [--header-row <number>]
+  binding-review <binding-id> reject --by <operator> --reason <reason>
+  binding-review <binding-id> recheck --by <operator> [--header-row <number>]
   shopify-auth
   shopify-adjust [shopify-product-gid]
   shopify-match [--confirmations <owner.json>] [--sheet-fixture <fixture.json> | --header-row <number>]
@@ -65,6 +72,7 @@ async function main(): Promise<void> {
 
   const commandOptions = {
     ...shopifyCommands,
+    ...bindingCommands,
     submit: { mode: { type: 'string' } },
     'submit-sheet': { mode: { type: 'string' } },
     'preview-google-sheet': {},
@@ -111,6 +119,11 @@ async function main(): Promise<void> {
   }
   const store = new Store(databasePath);
   try {
+    if (Object.hasOwn(bindingCommands, command)) {
+      const result = await runBindingCommand(store, command, positionals, values);
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
     const adapters = simulatedAdapters(store);
     if (values['fail-after-create']) {
       const create = adapters.shopify.create;

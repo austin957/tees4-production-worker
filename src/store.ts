@@ -8,6 +8,8 @@ import { parseExportEvidence } from './mockupify.js';
 import type { ExportJob, ExportPlan } from './mockupify.js';
 import { completionAction, isProduction, WorkerError } from './model.js';
 import { assertExportWindow, assertSkuWindow, ProductionWriteDeferred } from './production-schedule.js';
+import type { BindingAssignment, BindingEvent, BindingReviewEvent, ProductBinding } from './product-bindings.js';
+import type { ProductRead } from './shopify-readonly.js';
 import { existingSku, parseShopifyCatalog, resolveProduct } from './shopify-skus.js';
 import type { InitialSkuTarget, ShopifyProduct, ShopifyProductBinding, ShopifySkuAdapter } from './shopify-skus.js';
 import type { Artwork, Details, GarmentCompletion, Job, Mode, StageResult, Workflow, WriteAction } from './model.js';
@@ -87,6 +89,36 @@ export class Store {
           request TEXT NOT NULL,
           details TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS product_bindings (
+          id TEXT PRIMARY KEY,
+          spreadsheet_id TEXT NOT NULL,
+          row_number INTEGER NOT NULL,
+          product_sku TEXT NOT NULL,
+          shop_id TEXT NOT NULL,
+          product_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('proposed', 'approved', 'rejected', 'stale')),
+          created_at INTEGER NOT NULL,
+          body TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS active_binding_row ON product_bindings(spreadsheet_id, row_number)
+          WHERE status IN ('proposed', 'approved');
+        CREATE UNIQUE INDEX IF NOT EXISTS active_binding_product ON product_bindings(shop_id, product_id)
+          WHERE status IN ('proposed', 'approved');
+        CREATE UNIQUE INDEX IF NOT EXISTS active_binding_sku ON product_bindings(spreadsheet_id, product_sku)
+          WHERE status IN ('proposed', 'approved');
+        CREATE TABLE IF NOT EXISTS product_binding_events (
+          sequence INTEGER PRIMARY KEY,
+          binding_id TEXT NOT NULL REFERENCES product_bindings(id),
+          body TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS binding_events_history ON product_binding_events(binding_id, sequence);
+        CREATE TRIGGER IF NOT EXISTS binding_events_no_update BEFORE UPDATE ON product_binding_events
+          BEGIN SELECT RAISE(ABORT, 'Product binding history is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS binding_events_no_delete BEFORE DELETE ON product_binding_events
+          BEGIN SELECT RAISE(ABORT, 'Product binding history is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS binding_events_no_replace BEFORE INSERT ON product_binding_events
+          WHEN EXISTS (SELECT 1 FROM product_binding_events WHERE sequence = NEW.sequence)
+          BEGIN SELECT RAISE(ABORT, 'Product binding history is append-only'); END;
       `);
     } catch (error) {
       throw new WorkerError('DATABASE_OPEN', `Could not initialize the worker database: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -107,6 +139,71 @@ export class Store {
       this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  listProductBindings() {
+    return this.db.prepare('SELECT body FROM product_bindings ORDER BY created_at, id').all().map(row => {
+      const { shopifySnapshot, ...binding } = JSON.parse(row.body as string) as ProductBinding;
+      return { ...binding, variantCount: shopifySnapshot.variants.length };
+    });
+  }
+
+  getProductBinding(id: string): ProductBinding {
+    const row = this.db.prepare('SELECT body FROM product_bindings WHERE id = ?').get(id);
+    if (!row) throw new WorkerError('BINDING_NOT_FOUND', 'No product binding matches that ID.');
+    return JSON.parse(row.body as string) as ProductBinding;
+  }
+
+  inspectProductBinding(id: string) {
+    return this.transaction(() => ({
+      binding: this.getProductBinding(id),
+      history: this.db.prepare('SELECT body FROM product_binding_events WHERE binding_id = ? ORDER BY sequence').all(id)
+        .map(row => JSON.parse(row.body as string) as BindingEvent),
+    }));
+  }
+
+  private appendBindingEvent(id: string, event: BindingEvent): void {
+    this.db.prepare('INSERT INTO product_binding_events (binding_id, body) VALUES (?, ?)').run(id, JSON.stringify(event));
+  }
+
+  createProductBinding(assignment: BindingAssignment, by: string, shopifySnapshot: ProductRead, at: number): ProductBinding {
+    return this.transaction(() => {
+      const { spreadsheetId, rowNumber, productSku, shopId, productId } = assignment;
+      const conflict = this.db.prepare(`
+        SELECT id FROM product_bindings WHERE status IN ('proposed', 'approved')
+          AND ((spreadsheet_id = ? AND row_number = ?) OR (shop_id = ? AND product_id = ?)
+            OR (spreadsheet_id = ? AND product_sku = ?))
+      `).get(spreadsheetId, rowNumber, shopId, productId, spreadsheetId, productSku);
+      if (conflict) throw new WorkerError('BINDING_ASSIGNMENT_CONFLICT', 'An active binding already uses this row, Shopify product or Product SKU.');
+      const binding: ProductBinding = {
+        ...assignment, id: randomUUID(), status: 'proposed', createdAt: at, updatedAt: at, shopifySnapshot, confirmation: null,
+      };
+      this.db.prepare(`
+        INSERT INTO product_bindings (id, spreadsheet_id, row_number, product_sku, shop_id, product_id, status, created_at, body)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(binding.id, spreadsheetId, rowNumber, productSku, shopId, productId, binding.status, at, JSON.stringify(binding));
+      this.appendBindingEvent(binding.id, { event: 'proposed', at, by, from: null, to: 'proposed' });
+      return binding;
+    });
+  }
+
+  recordProductBindingReview(id: string, review: BindingReviewEvent) {
+    return this.transaction(() => {
+      const binding = this.getProductBinding(id);
+      const from = binding.status;
+      const expected = review.event === 'revalidated' || ('review' in review && review.review === 'recheck') ? 'approved' : 'proposed';
+      if (from !== expected) throw new WorkerError('BINDING_REVIEW_CONFLICT', 'The binding no longer has the status required for this review.');
+      if (review.event === 'approved') binding.confirmation = { by: review.by, at: review.at, source: review.source };
+      if (review.event !== 'verification_failed' && review.event !== 'revalidated') {
+        binding.status = review.event;
+        binding.updatedAt = review.at;
+        this.db.prepare('UPDATE product_bindings SET status = ?, body = ? WHERE id = ?')
+          .run(binding.status, JSON.stringify(binding), id);
+      }
+      const event = { ...review, from, to: binding.status };
+      this.appendBindingEvent(id, event);
+      return { binding, event };
+    });
   }
 
   private load(id: string): Job {
