@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { readActions, WorkerError, writeActions } from './model.js';
-import type { Action, Artwork, Mode, Stage, Workflow } from './model.js';
+import { readActions, skuAction, WorkerError, writeActions } from './model.js';
+import type { Action, ArtworkIdentity, LegacyArtwork, Mode, Stage, Workflow } from './model.js';
 
 export function readJson(path: string, purpose: string): unknown {
   let content: string;
@@ -17,40 +17,46 @@ export function readJson(path: string, purpose: string): unknown {
   }
 }
 
-function object(value: unknown, label: string): Record<string, unknown> {
+export function object(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new WorkerError('INVALID_INPUT', `${label} must be an object.`);
   }
   return value as Record<string, unknown>;
 }
 
-function onlyKeys(value: Record<string, unknown>, keys: string[], label: string): void {
+export function onlyKeys(value: Record<string, unknown>, keys: string[], label: string): void {
   if (Object.keys(value).some(key => !keys.includes(key))) {
     throw new WorkerError('INVALID_INPUT', `${label} contains an unsupported field.`);
   }
 }
 
-function requiredText(value: unknown, label: string): string {
-  if (typeof value !== 'string' || !value.trim() || value !== value.trim() || /\p{Cc}/u.test(value)) {
+export function requiredText(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim() || value !== value.trim() || !value.isWellFormed() || /\p{Cc}/u.test(value)) {
     throw new WorkerError('INVALID_INPUT', `${label} requires a nonempty string without surrounding whitespace or control characters.`);
   }
   return value;
 }
 
-function integer(value: unknown, label: string, min: number, max: number): number {
+export function integer(value: unknown, label: string, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
     throw new WorkerError('INVALID_INPUT', `${label} must be an integer from ${min} through ${max}.`);
   }
   return value;
 }
 
-export function parseArtwork(input: unknown): Artwork {
-  const value = object(input, 'Artwork');
-  onlyKeys(value, ['artworkId', 'artworkRef', 'designerId', 'sku', 'productTitle'], 'Artwork');
+export function parseArtworkIdentity(value: Record<string, unknown>): ArtworkIdentity {
   return {
     artworkId: requiredText(value.artworkId, 'artworkId'),
     artworkRef: requiredText(value.artworkRef, 'artworkRef'),
     designerId: requiredText(value.designerId, 'designerId'),
+  };
+}
+
+export function parseArtwork(input: unknown): LegacyArtwork {
+  const value = object(input, 'Artwork');
+  onlyKeys(value, ['artworkId', 'artworkRef', 'designerId', 'sku', 'productTitle'], 'Artwork');
+  return {
+    ...parseArtworkIdentity(value),
     sku: requiredText(value.sku, 'sku'),
     productTitle: requiredText(value.productTitle, 'productTitle'),
   };
@@ -68,7 +74,7 @@ function parseStage(input: unknown): Stage {
     onlyKeys(value, ['id', 'kind'], 'Stage');
     return { id, kind: value.kind };
   }
-  const actions: readonly unknown[] = [...readActions, ...writeActions];
+  const actions: readonly unknown[] = [...readActions, ...writeActions, skuAction];
   if (value.kind === 'action' && actions.includes(value.action)) {
     onlyKeys(value, ['id', 'kind', 'action'], 'Stage');
     return { id, kind: 'action', action: value.action as Action };

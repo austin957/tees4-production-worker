@@ -1,6 +1,6 @@
 # Tees-4 Production Worker
 
-Phase 1 is a TypeScript and Node.js worker for exercising artwork intake, product processing, and manual publication approval with simulated services. All job and simulated effect records are stored in local SQLite.
+The TypeScript and Node.js worker exercises artwork intake, product processing, manual publication approval, and initial variant SKU assignment with simulated services. All job and simulated effect records are stored in local SQLite.
 
 ## Setup
 
@@ -46,3 +46,7 @@ Relative paths are resolved from the current working directory. Repeat `run` aft
 - [Architecture](docs/architecture.md)
 - [Workflow configuration and recovery walkthrough](docs/workflow.md)
 - [Development instructions](AGENTS.md)
+
+## Phase 2 sheet-backed SKU workflow
+
+Use the [SKU processing guide](docs/sku-processing.md) to run a two-garment fixture, preview variant assignments, or simulate local SKU writes. The guide describes the read-only Master Input adapter, Shopify ID bindings, and the Central-time protection window.

@@ -1,8 +1,11 @@
 import { readAction, verifyRead, writeAction } from './adapters.js';
 import type { Adapters } from './adapters.js';
-import { parseArtwork, parseMode, parseWorkflow } from './config.js';
-import { asWorkerError, isWrite, WorkerError } from './model.js';
+import { parseMode, parseWorkflow } from './config.js';
+import { asWorkerError, isProduction, isWrite, skuAction, WorkerError } from './model.js';
 import type { Job, StageResult } from './model.js';
+import { parseJobArtwork } from './sheets.js';
+import { assignSkus, protectedUntil, SkuWriteDeferred } from './shopify-skus.js';
+import type { ShopifySkuAdapter } from './shopify-skus.js';
 import type { Store } from './store.js';
 
 export interface LogEntry {
@@ -22,10 +25,19 @@ export class Worker {
     private readonly adapters: Adapters,
     private readonly log: Logger = () => {},
     private readonly clock: () => number = Date.now,
+    private readonly shopifySkus: ShopifySkuAdapter = store.shopifySkuAdapter(),
   ) {}
 
   submit(input: unknown, workflow: unknown, mode: unknown = 'dry-run'): { job: Job; duplicate: boolean } {
-    const result = this.store.submit(parseArtwork(input), parseWorkflow(workflow), parseMode(mode), this.clock());
+    const artwork = parseJobArtwork(input);
+    const definition = parseWorkflow(workflow);
+    const actions = definition.stages.flatMap(stage => stage.kind === 'action' ? [stage.action] : []);
+    if (isProduction(artwork)
+      ? !actions.includes(skuAction) || actions.some(action => action !== skuAction)
+      : actions.includes(skuAction)) {
+      throw new WorkerError('WORKFLOW_INPUT_MISMATCH', 'The sheet-backed artwork and Shopify SKU assignment stage must be used together.');
+    }
+    const result = this.store.submit(artwork, definition, parseMode(mode), this.clock());
     this.emit(result.job, result.duplicate ? 'duplicate_submission' : 'submitted');
     return result;
   }
@@ -69,6 +81,11 @@ export class Worker {
       try {
         result = await this.execute(job);
       } catch (caught) {
+        if (caught instanceof SkuWriteDeferred) {
+          const updated = this.store.defer(claim, stage.id, caught, caught.retryAt, this.clock());
+          this.emit(job, updated ? 'write_deferred' : 'lease_lost', stage.id, caught);
+          continue;
+        }
         const error = asWorkerError(caught);
         const updated = this.store.fail(claim, stage.id, error, this.clock());
         if (updated?.status === 'failed') failed.push(job.id);
@@ -87,11 +104,24 @@ export class Worker {
     const stage = job.workflow.stages[job.nextStage]!;
     const stageId = stage.id;
     if (stage.kind === 'validate') {
-      parseArtwork(job.artwork);
+      parseJobArtwork(job.artwork);
       return { stageId, outcome: 'validated' };
     }
     if (stage.kind !== 'action') throw new WorkerError('INVALID_STAGE', 'Expected an action stage.');
     const { action } = stage;
+    if (isProduction(job.artwork)) {
+      if (action !== skuAction) throw new WorkerError('WORKFLOW_INPUT_MISMATCH', 'This action requires Phase 1 fixture artwork.');
+      if (job.mode !== 'dry-run' && job.mode !== 'simulate') throw new WorkerError('INVALID_MODE', 'No supported mode was selected.');
+      const skuAssignments = await assignSkus(job.artwork, job.mode, this.shopifySkus, this.clock);
+      const dryRun = job.mode === 'dry-run';
+      const blockedUntil = dryRun ? protectedUntil(this.clock()) : undefined;
+      return {
+        stageId, outcome: dryRun ? 'planned' : skuAssignments.some(variant => variant.outcome === 'assigned') ? 'applied' : 'reused',
+        ...(blockedUntil === undefined ? {} : { details: { skuWritesProtectedUntil: new Date(blockedUntil).toISOString() } }),
+        skuAssignments,
+      };
+    }
+    if (action === skuAction) throw new WorkerError('WORKFLOW_INPUT_MISMATCH', 'SKU assignment requires sheet-backed artwork.');
     if (!isWrite(action)) {
       const details = await readAction(this.adapters, action, job.artwork);
       verifyRead(action, details, job.artwork);

@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { WorkerError } from './model.js';
+import { isProduction, WorkerError } from './model.js';
+import { assertSkuWindow, existingSku, parseShopifyCatalog, resolveProduct } from './shopify-skus.js';
+import type { InitialSkuTarget, ShopifyProduct, ShopifySkuAdapter } from './shopify-skus.js';
 import type { Artwork, Details, Job, Mode, StageResult, Workflow, WriteAction } from './model.js';
 
 interface Claim {
@@ -15,7 +17,11 @@ interface Effect {
   reused: boolean;
 }
 
-const identity = (artwork: Artwork, mode: Mode) => JSON.stringify([mode, artwork.artworkId, artwork.sku]);
+function identity(artwork: Artwork, mode: Mode): string {
+  return JSON.stringify(isProduction(artwork)
+    ? ['production', mode, artwork.artworkSku]
+    : [mode, artwork.artworkId, artwork.sku]);
+}
 
 export class Store {
   private readonly db: DatabaseSync;
@@ -38,6 +44,21 @@ export class Store {
           body TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(status, available_at, created_at);
+        CREATE TABLE IF NOT EXISTS shopify_products (
+          id TEXT PRIMARY KEY,
+          artwork_sku TEXT NOT NULL,
+          product_sku TEXT NOT NULL,
+          fixture TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS shopify_product_bindings ON shopify_products(product_sku);
+        CREATE TABLE IF NOT EXISTS shopify_variants (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL REFERENCES shopify_products(id),
+          size TEXT NOT NULL,
+          color TEXT NOT NULL,
+          sku TEXT
+        );
+        CREATE INDEX IF NOT EXISTS shopify_variant_product ON shopify_variants(product_id);
         CREATE TABLE IF NOT EXISTS effects (
           key TEXT PRIMARY KEY,
           action TEXT NOT NULL,
@@ -173,6 +194,14 @@ export class Store {
     });
   }
 
+  defer(claim: Claim, stageId: string, error: WorkerError, retryAt: number, now: number): Job | undefined {
+    return this.settle(claim, now, job => {
+      job.status = 'retry_wait';
+      job.availableAt = retryAt;
+      job.history.push({ at: now, event: 'write_deferred', stageId, code: error.code, message: error.message });
+    });
+  }
+
   fail(claim: Claim, stageId: string, error: WorkerError, now: number): Job | undefined {
     return this.settle(claim, now, job => {
       job.failures += 1;
@@ -183,6 +212,73 @@ export class Store {
         at: now, event: retry ? 'retry_scheduled' : 'failed', stageId, code: error.code, message: error.message,
       });
     });
+  }
+
+  importShopifyFixtures(input: unknown): number {
+    const products = parseShopifyCatalog(input);
+    return this.transaction(() => {
+      let imported = 0;
+      for (const product of products) {
+        const baseline = JSON.stringify(product);
+        const row = this.db.prepare('SELECT fixture FROM shopify_products WHERE id = ?').get(product.id);
+        if (row) {
+          if (row.fixture !== baseline) {
+            throw new WorkerError('FIXTURE_CONFLICT', 'An existing Shopify product fixture differs from this import.');
+          }
+          continue;
+        }
+        this.db.prepare('INSERT INTO shopify_products (id, artwork_sku, product_sku, fixture) VALUES (?, ?, ?, ?)')
+          .run(product.id, product.artworkSku, product.productSku, baseline);
+        for (const variant of product.variants) {
+          if (this.db.prepare('SELECT id FROM shopify_variants WHERE id = ?').get(variant.id)) {
+            throw new WorkerError('FIXTURE_CONFLICT', 'A Shopify variant ID is already registered to a product.');
+          }
+          this.db.prepare('INSERT INTO shopify_variants (id, product_id, size, color, sku) VALUES (?, ?, ?, ?, ?)')
+            .run(variant.id, product.id, variant.size, variant.color, variant.sku);
+        }
+        imported += 1;
+      }
+      return imported;
+    });
+  }
+
+  private findShopifyBindings(productSku: string): Omit<ShopifyProduct, 'variants'>[] {
+    return this.db.prepare('SELECT id, artwork_sku FROM shopify_products WHERE product_sku = ? ORDER BY id')
+      .all(productSku).map(row => ({ id: row.id as string, artworkSku: row.artwork_sku as string, productSku }));
+  }
+
+  private findShopifyProducts(productSku: string): ShopifyProduct[] {
+    const variants = this.db.prepare('SELECT id, size, color, sku FROM shopify_variants WHERE product_id = ? ORDER BY id');
+    return this.findShopifyBindings(productSku).map(binding => ({
+      ...binding,
+      variants: variants.all(binding.id).map(row => ({
+        id: row.id as string, size: row.size as string, color: row.color as string, sku: row.sku as string | null,
+      })),
+    }));
+  }
+
+  private assignShopifySku(target: InitialSkuTarget, clock: () => number) {
+    return this.transaction(() => {
+      const product = resolveProduct(this.findShopifyBindings(target.productSku), target.artworkSku);
+      const variant = this.db.prepare('SELECT sku FROM shopify_variants WHERE product_id = ? AND id = ?')
+        .get(product.id, target.variantId);
+      if (product.id !== target.productId || !variant) {
+        throw new WorkerError('PRODUCT_BINDING_CONFLICT', 'The Shopify product or variant binding changed before assignment.');
+      }
+      const outcome = existingSku(variant.sku as string | null, target.productSku);
+      if (outcome) return outcome;
+      const update = this.db.prepare('UPDATE shopify_variants SET sku = ? WHERE product_id = ? AND id = ? AND sku IS NULL');
+      assertSkuWindow(clock());
+      update.run(target.productSku, target.productId, target.variantId);
+      return 'assigned' as const;
+    });
+  }
+
+  shopifySkuAdapter(): ShopifySkuAdapter {
+    return {
+      findProducts: async productSku => this.findShopifyProducts(productSku),
+      assignInitialSku: async (target, clock) => this.assignShopifySku(target, clock),
+    };
   }
 
   applyEffect(

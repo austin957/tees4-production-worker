@@ -1,10 +1,10 @@
 import { WorkerError } from './model.js';
-import type { Artwork, Details, ReadAction, WriteAction } from './model.js';
+import type { LegacyArtwork, Details, ReadAction, WriteAction } from './model.js';
 import type { Store } from './store.js';
 
-type Read = (artwork: Readonly<Artwork>) => Promise<Details>;
+type Read = (artwork: Readonly<LegacyArtwork>) => Promise<Details>;
 interface WriteRequest {
-  artwork: Readonly<Artwork>;
+  artwork: Readonly<LegacyArtwork>;
   key: string;
 }
 interface WriteResult {
@@ -14,7 +14,7 @@ interface WriteResult {
 type Write = (request: WriteRequest) => Promise<WriteResult>;
 
 export interface GoogleDriveAdapter { readArtwork: Read }
-export interface GoogleSheetsAdapter { readAssignment: Read }
+export interface LegacySheetsAdapter { readAssignment: Read }
 export interface MockupifyAdapter { generate: Write }
 export interface ShopifyAdapter { create: Write; publish: Write }
 export interface TeeInBlueAdapter { readDesign: Read }
@@ -24,7 +24,7 @@ export interface AffiliatePortalAdapter { readSubmission: Read }
 
 export interface Adapters {
   drive: GoogleDriveAdapter;
-  sheets: GoogleSheetsAdapter;
+  sheets: LegacySheetsAdapter;
   mockupify: MockupifyAdapter;
   shopify: ShopifyAdapter;
   teeinblue: TeeInBlueAdapter;
@@ -57,17 +57,17 @@ export function simulatedAdapters(store: Store): Adapters {
   };
 }
 
-function productRef(artwork: Readonly<Artwork>): string {
+function productRef(artwork: Readonly<LegacyArtwork>): string {
   return `fixture://shopify/${encodeURIComponent(artwork.sku)}`;
 }
 
-export function effectKey(action: WriteAction, artwork: Readonly<Artwork>): string {
+export function effectKey(action: WriteAction, artwork: Readonly<LegacyArtwork>): string {
   return JSON.stringify(action === 'mockupify.generate'
     ? [action, artwork.artworkId, artwork.sku]
     : [action, artwork.sku]);
 }
 
-export function readAction(adapters: Adapters, action: ReadAction, artwork: Readonly<Artwork>): Promise<Details> {
+export function readAction(adapters: Adapters, action: ReadAction, artwork: Readonly<LegacyArtwork>): Promise<Details> {
   switch (action) {
     case 'drive.readArtwork': return adapters.drive.readArtwork(artwork);
     case 'sheets.readAssignment': return adapters.sheets.readAssignment(artwork);
@@ -78,7 +78,7 @@ export function readAction(adapters: Adapters, action: ReadAction, artwork: Read
   }
 }
 
-export function writeAction(adapters: Adapters, action: WriteAction, artwork: Readonly<Artwork>): Promise<WriteResult> {
+export function writeAction(adapters: Adapters, action: WriteAction, artwork: Readonly<LegacyArtwork>): Promise<WriteResult> {
   const request = { artwork, key: effectKey(action, artwork) };
   switch (action) {
     case 'mockupify.generate': return adapters.mockupify.generate(request);
@@ -87,7 +87,7 @@ export function writeAction(adapters: Adapters, action: WriteAction, artwork: Re
   }
 }
 
-export function verifyRead(action: ReadAction, details: Details, artwork: Readonly<Artwork>): void {
+export function verifyRead(action: ReadAction, details: Details, artwork: Readonly<LegacyArtwork>): void {
   const required: Partial<Record<ReadAction, Details>> = {
     'drive.readArtwork': { artworkRef: artwork.artworkRef },
     'sheets.readAssignment': { sku: artwork.sku, productTitle: artwork.productTitle },

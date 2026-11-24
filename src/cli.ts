@@ -1,13 +1,16 @@
 import { parseArgs } from 'node:util';
 import type { ParseArgsConfig } from 'node:util';
 import { simulatedAdapters } from './adapters.js';
-import { readJson, settings } from './config.js';
+import { object, onlyKeys, readJson, settings } from './config.js';
 import { asWorkerError, WorkerError } from './model.js';
+import { readProductionArtwork, simulatedSheets } from './sheets.js';
 import { Store } from './store.js';
 import { report, Worker } from './worker.js';
 
 const help = `Tees-4 Production Worker
   submit <artwork.json> [--mode dry-run|simulate]
+  submit-sheet <sheet-fixture.json> [--mode dry-run|simulate]
+  load-shopify-fixture <shopify-fixture.json>
   run [--limit <count>] [--fail-after-create]
   list
   inspect <job-id>
@@ -16,7 +19,7 @@ const help = `Tees-4 Production Worker
   help
 
 Run from the project root. TEES4_CONFIG and TEES4_DATABASE override the local file paths.
-Dry-run is the default. The simulate mode writes only to the local effects ledger.`;
+Dry-run is the default. The simulate mode only writes to local SQLite.`;
 
 function positional(values: string[], count: number): void {
   if (values.length !== count) {
@@ -33,6 +36,8 @@ async function main(): Promise<void> {
 
   const commandOptions = {
     submit: { mode: { type: 'string' } },
+    'submit-sheet': { mode: { type: 'string' } },
+    'load-shopify-fixture': {},
     run: { limit: { type: 'string' }, 'fail-after-create': { type: 'boolean' } },
     approve: { by: { type: 'string' } },
     list: {}, inspect: {}, effects: {},
@@ -71,6 +76,19 @@ async function main(): Promise<void> {
         output = { duplicate: result.duplicate, ...report(result.job) };
         break;
       }
+      case 'submit-sheet': {
+        positional(positionals, 1);
+        const fixture = object(readJson(positionals[0]!, 'sheet fixture'), 'Sheet fixture');
+        onlyKeys(fixture, ['artwork', 'rows'], 'Sheet fixture');
+        const artwork = await readProductionArtwork(fixture.artwork, simulatedSheets(fixture.rows));
+        const result = worker.submit(artwork, readJson(workflowPath, 'workflow'), values.mode);
+        output = { duplicate: result.duplicate, ...report(result.job) };
+        break;
+      }
+      case 'load-shopify-fixture':
+        positional(positionals, 1);
+        output = { imported: store.importShopifyFixtures(readJson(positionals[0]!, 'Shopify fixture')) };
+        break;
       case 'run': {
         positional(positionals, 0);
         const limit = Number(values.limit ?? 100);

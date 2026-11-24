@@ -7,7 +7,7 @@ import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { simulatedAdapters, writeAction } from '../src/adapters.js';
 import { parseArtwork, parseWorkflow } from '../src/config.js';
-import { WorkerError } from '../src/model.js';
+import { isProduction, WorkerError } from '../src/model.js';
 import { Store } from '../src/store.js';
 import { report, Worker } from '../src/worker.js';
 
@@ -103,6 +103,7 @@ test('expired stage leases are recovered and stale checkpoints are fenced', asyn
   const claim = store.claim(now);
   assert.ok(claim);
   assert.equal(claim.job.workflow.stages[claim.job.nextStage]?.id, 'create-product-draft');
+  assert.ok(!isProduction(claim.job.artwork));
   await writeAction(adapters, 'shopify.create', claim.job.artwork);
   assert.equal(second.claim(now), undefined);
 

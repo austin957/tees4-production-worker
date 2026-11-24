@@ -1,12 +1,41 @@
 export type Mode = 'dry-run' | 'simulate';
 
-export interface Artwork {
+export interface ArtworkIdentity {
   artworkId: string;
   artworkRef: string;
   designerId: string;
+}
+
+export interface LegacyArtwork extends ArtworkIdentity {
   sku: string;
   productTitle: string;
 }
+
+export interface GarmentAssignment {
+  sourceRow: number;
+  productSku: string;
+  productTitle: string;
+  productDescription: string;
+  vendor: string;
+  garmentSelection: string;
+  colors: string;
+  tags: string;
+}
+
+export interface ProductionArtwork extends ArtworkIdentity {
+  kind: 'production';
+  artworkSku: string;
+  artworkName: string;
+  garments: GarmentAssignment[];
+}
+
+export type Artwork = LegacyArtwork | ProductionArtwork;
+
+export function isProduction(artwork: Artwork): artwork is ProductionArtwork {
+  return 'kind' in artwork && artwork.kind === 'production';
+}
+
+export const skuAction = 'shopify.assignSkus';
 
 export const readActions = [
   'drive.readArtwork',
@@ -20,7 +49,7 @@ export const readActions = [
 export const writeActions = ['mockupify.generate', 'shopify.create', 'shopify.publish'] as const;
 export type ReadAction = typeof readActions[number];
 export type WriteAction = typeof writeActions[number];
-export type Action = ReadAction | WriteAction;
+export type Action = ReadAction | WriteAction | typeof skuAction;
 
 export type Stage =
   | { id: string; kind: 'validate' | 'approval' }
@@ -57,6 +86,14 @@ export interface StageResult {
   stageId: string;
   outcome: 'validated' | 'approved' | 'read' | 'planned' | 'applied' | 'reused';
   details?: Details;
+  skuAssignments?: {
+    productId: string;
+    productSku: string;
+    variantId: string;
+    size: string;
+    color: string;
+    outcome: 'planned' | 'assigned' | 'already_assigned' | 'preserved';
+  }[];
 }
 
 export interface JobEvent {

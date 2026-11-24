@@ -22,6 +22,10 @@ For the Phase 1 fixtures, the assigned SKU is the simulated product identity. Cr
 
 Dry-run plans the write before reaching the adapter dispatch, which leaves the simulated effect ledger empty. The worker records explicit approvals in both modes. Terminal failures and transient errors appear in JSON logs and durable job history.
 
+## Sheet-backed SKU assignment
+
+Phase 2 adds a read-only sheet adapter, artwork with multiple garment assignments, and a local Shopify product and variant catalog. See the [SKU processing guide](sku-processing.md) for matching, retry behavior, and the Hextom window.
+
 ## Phase 1 scope
 
 This foundation runs against a local database and a CLI that drains currently available work. Operator names are local audit labels. The fixtures do not define production SKU uniqueness, source schemas, approval authority, platform write contracts, or reconciliation rules. Before enabling live integrations, define those rules with the owner and verify that each provider supports idempotent writes or can reliably reconcile an interrupted request.

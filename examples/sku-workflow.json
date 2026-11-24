@@ -1,0 +1,10 @@
+{
+  "id": "phase-2-initial-skus",
+  "maxAttempts": 3,
+  "retryDelayMs": 1000,
+  "leaseMs": 30000,
+  "stages": [
+    { "id": "validate-artwork", "kind": "validate" },
+    { "id": "assign-initial-skus", "kind": "action", "action": "shopify.assignSkus" }
+  ]
+}

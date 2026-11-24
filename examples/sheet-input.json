@@ -1,0 +1,18 @@
+{
+  "artwork": {
+    "artworkId": "example-artwork-002",
+    "artworkRef": "fixture://drive/example-artwork-002.svg",
+    "designerId": "example-designer-001",
+    "artworkSku": "00042"
+  },
+  "rows": [
+    {
+      "rowNumber": 2,
+      "cells": ["Example Artwork", "Example Tee", "Printed tee", "Example Vendor", "Tee", "White, Black", "example", "000710", null, null, "00042"]
+    },
+    {
+      "rowNumber": 3,
+      "cells": ["Example Artwork", "Example Hoodie", "Printed hoodie", "Example Vendor", "Hoodie", "Navy", "example", "000711", null, null, "00042"]
+    }
+  ]
+}
