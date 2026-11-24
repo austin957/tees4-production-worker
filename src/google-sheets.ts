@@ -82,31 +82,60 @@ function authenticatedReader(): ReadValues {
   };
 }
 
+async function readSheetRows(
+  source: typeof masterInput, start: string, end: string, headerRow: number,
+  expectedHeaders: [string, string][], readValues: ReadValues,
+) {
+  const tab = `'${source.tab.replaceAll("'", "''")}'`;
+  const range = `${tab}!${start}${headerRow}:${end}`;
+  const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(source.spreadsheetId)}/values/${encodeURIComponent(range)}`);
+  // Keep the exact displayed SKU strings, including zeros supplied by a cell's number format.
+  url.search = new URLSearchParams({ majorDimension: 'ROWS', valueRenderOption: 'FORMATTED_VALUE' }).toString();
+  const data = object(await readValues(url), 'Sheets values response');
+  if (!Array.isArray(data.values) || !Array.isArray(data.values[0])) {
+    throw new WorkerError('SHEET_HEADER_MISMATCH', 'The configured Master Input header row was not returned.');
+  }
+  const [header, ...rows] = data.values as unknown[];
+  const headers = header as unknown[];
+  for (const [column, expected] of expectedHeaders) {
+    const index = columnIndex(column) - columnIndex(start);
+    if (headers[index] !== expected || headers.filter(cell => cell === expected).length !== 1) {
+      throw new WorkerError('SHEET_HEADER_MISMATCH', `Master Input column ${column} must contain the unique header "${expected}".`);
+    }
+  }
+  return rows.map((cells, offset) => ({ rowNumber: headerRow + offset + 1, cells }));
+}
+
 export function googleSheets(policy: SheetEligibilityPolicy, readValues = authenticatedReader()): GoogleSheetsAdapter {
   return {
-    async readRows(source) {
+    readRows(source) {
       const end = columnIndex(policy.eligibility.column) > columnIndex('K') ? policy.eligibility.column : 'K';
-      const tab = `'${source.tab.replaceAll("'", "''")}'`;
-      const range = `${tab}!A${policy.headerRow}:${end}`;
-      const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(source.spreadsheetId)}/values/${encodeURIComponent(range)}`);
-      // Keep the exact displayed SKU strings, including zeros supplied by a cell's number format.
-      url.search = new URLSearchParams({ majorDimension: 'ROWS', valueRenderOption: 'FORMATTED_VALUE' }).toString();
-      const data = object(await readValues(url), 'Sheets values response');
-      if (!Array.isArray(data.values) || !Array.isArray(data.values[0])) {
-        throw new WorkerError('SHEET_HEADER_MISMATCH', 'The configured Master Input header row was not returned.');
-      }
-      const [header, ...rows] = data.values as unknown[];
-      const headers = header as unknown[];
-      for (const [column, expected] of [
-        ...Object.entries(policy.columnHeaders), [policy.eligibility.column, policy.eligibility.header],
-      ] as [string, string][]) {
-        if (headers[columnIndex(column)] !== expected || headers.filter(cell => cell === expected).length !== 1) {
-          throw new WorkerError('SHEET_HEADER_MISMATCH', `Master Input column ${column} must contain the unique header "${expected}".`);
-        }
-      }
-      return rows.map((cells, offset) => ({ rowNumber: policy.headerRow + offset + 1, cells }));
+      return readSheetRows(source, 'A', end, policy.headerRow,
+        [...Object.entries(policy.columnHeaders), [policy.eligibility.column, policy.eligibility.header]], readValues);
     },
   };
+}
+
+export interface MasterInputSkuRow {
+  rowNumber: number;
+  productSku: string | null;
+  artworkSku: string | null;
+}
+
+export async function readMasterInputSkuRows(headerRow: number, readValues = authenticatedReader()): Promise<MasterInputSkuRow[]> {
+  const rows = await readSheetRows(masterInput, 'H', 'K', headerRow,
+    [['H', mappedHeaders.H], ['K', mappedHeaders.K]], readValues);
+  const sku = (value: unknown): string | null => {
+    if (value === undefined || value === null || value === '') return null;
+    if (typeof value !== 'string') {
+      throw new WorkerError('INVALID_SHEET_ROW', 'Master Input SKU cells must be returned as exact displayed strings.');
+    }
+    return value;
+  };
+  return rows.map(({ rowNumber, cells }) => {
+    if (!Array.isArray(cells)) throw new WorkerError('INVALID_SHEET_ROW', 'Sheets returned a data row with invalid cells.');
+    return { rowNumber, productSku: sku(cells[0]), artworkSku: sku(cells[3]) };
+  });
 }
 
 interface SheetPreview {

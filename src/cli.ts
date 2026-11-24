@@ -30,6 +30,8 @@ const help = `Tees-4 Production Worker
   shopify-auth
   shopify-adjust [shopify-product-gid]
   shopify-hextom-verify <shopify-product-gid> [--verified-base-sku <sku>]
+  shopify-reconcile <shopify-product-gid> --product-sku <sku> --artwork-sku <sku> --evidence-ref <ref>
+    [--row <number>] [--verified-source <record.json>] [--sheet-fixture <fixture.json> | --header-row <number>]
   shopify-identify
   shopify-products
   shopify-product <shopify-product-gid>
@@ -82,9 +84,7 @@ async function main(): Promise<void> {
   }
   const { positionals, values } = parsed;
   if (Object.hasOwn(shopifyCommands, command)) {
-    const baseSku = values['verified-base-sku'];
-    const result = await runShopifyCommand(command, positionals, values.fixture === true,
-      typeof baseSku === 'string' ? baseSku : undefined);
+    const result = await runShopifyCommand(command, positionals, values);
     console.log(JSON.stringify(result, null, 2));
     return;
   }

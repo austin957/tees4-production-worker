@@ -222,6 +222,11 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
   assert.equal(run('shopify-variants', id).variants.length, 2);
   assert.equal(run('shopify-adjust').count, 0);
   assert.equal(run('shopify-adjust', id).hasAdjustTag, false);
+  const reconciliation = run('shopify-reconcile', id, '--product-sku', '000710', '--artwork-sku', '00042',
+    '--evidence-ref', 'observed-sku-only', '--row', '2', '--sheet-fixture', 'examples/reconciliation-sheet-fixture.json');
+  assert.equal(reconciliation.status, 'CANDIDATE');
+  assert.equal(reconciliation.masterInput.authoritative, false);
+  assert.equal(reconciliation.proposedBinding, null);
   assert.equal(run('shopify-hextom-verify', id).status, 'NEEDS_RECONCILIATION');
   assert.equal(run('shopify-hextom-verify', id, '--verified-base-sku', '000710').status, 'MANUAL_REVIEW');
   const compare = ['examples/shopify-readonly-bindings.json', '2', 'examples/sheet-input.json', '--fixture'];

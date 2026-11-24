@@ -67,3 +67,7 @@ The [Mockupify guide](docs/mockupify.md) explains template and color mapping, th
 ## Phase 6 Shopify read-only inspection
 
 The [Shopify read-only guide](docs/shopify-readonly.md) covers authorizing the dedicated app, inspecting products and variants, and comparing explicit Shopify bindings against Master Input.
+
+## Phase 9 source SKU reconciliation
+
+Use [source SKU reconciliation](docs/shopify-reconciliation.md) to compare independently reviewed source evidence and Master Input rows against a known Shopify product. The command only reports possible bindings for owner review.
