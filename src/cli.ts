@@ -7,6 +7,7 @@ import { runMockupifyExport } from './export-runner.js';
 import { planMockupifyExport, simulatedMockupifyExports } from './mockupify.js';
 import { asWorkerError, WorkerError } from './model.js';
 import { readProductionArtwork, simulatedSheets } from './sheets.js';
+import { runShopifyCommand, shopifyCommands } from './shopify-cli.js';
 import { Store } from './store.js';
 import { report, Worker } from './worker.js';
 
@@ -26,6 +27,12 @@ const help = `Tees-4 Production Worker
   inspect <job-id>
   approve <job-id> <stage-id> --by <approver>
   effects
+  shopify-auth
+  shopify-product <shopify-product-gid>
+  shopify-variants <shopify-product-gid>
+  shopify-compare <bindings.json> <row> <artwork-selection.json> <policy.json>
+  shopify-preview <bindings.json> <row> <artwork-selection.json> <policy.json>
+  Use --fixture with shopify-compare or shopify-preview to supply a sheet fixture instead of the selection and policy.
   help
 
 Run from the project root. TEES4_CONFIG and TEES4_DATABASE override the local file paths.
@@ -45,6 +52,7 @@ async function main(): Promise<void> {
   }
 
   const commandOptions = {
+    ...shopifyCommands,
     submit: { mode: { type: 'string' } },
     'submit-sheet': { mode: { type: 'string' } },
     'preview-google-sheet': {},
@@ -68,6 +76,10 @@ async function main(): Promise<void> {
     throw new WorkerError('CLI_USAGE', error instanceof Error ? error.message : 'Invalid command options.');
   }
   const { positionals, values } = parsed;
+  if (Object.hasOwn(shopifyCommands, command)) {
+    console.log(JSON.stringify(await runShopifyCommand(command, positionals, values.fixture === true), null, 2));
+    return;
+  }
   const { workflowPath, databasePath, exportMarginMinutes } = settings(process.env);
   let selectedArtwork;
   if (command === 'preview-google-sheet' || command === 'submit-google-sheet') {

@@ -4,7 +4,7 @@
 - Use `npm ci` to install. Run `npm run typecheck`, `npm test`, and `npm run build` before handing off changes.
 - Keep platform integrations behind platform-specific adapters. Keep workflow decisions, persistence, and command-line handling out of adapters where possible.
 - Keep dry-run mode the default. Dry-run may persist local job state and must bypass all write adapter methods.
-- Keep Mockupify and Shopify simulated and use synthetic test data. The Google Sheets adapter may read the authorized Master Input tab through ADC and must use read-only access. Keep secrets out of the repository and logs. Do not add paid services or change other Tees-4 repositories.
+- Keep Mockupify and Shopify write adapters simulated and use synthetic test data. The live Shopify client uses fixed GraphQL reads, verifies the shop identity, and requires an app installation with only read_products. The Google Sheets adapter may read the authorized Master Input tab through ADC and must use read-only access. Keep secrets out of the repository and logs. Do not add paid services or change other Tees-4 repositories.
 - Use the supplied artwork and assigned SKU. Never generate artwork or SKUs, overwrite artwork, omit designer attribution, or publish without explicit approval.
 - Protect new Mockupify exports and initial Shopify variant SKU writes daily from 4:20 PM inclusive to 9:10 PM exclusive America/Chicago. Check the clock immediately before each write. Defer blocked work without spending a retry attempt or resetting checkpoints.
 - Require an explicitly configured Mockupify export safety margin and start a new export only when more than that margin remains before the next 4:20 PM cutoff.

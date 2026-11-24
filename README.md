@@ -63,3 +63,7 @@ The [garment completion guide](docs/garment-completion.md) shows how to simulate
 ## Phase 5 Mockupify export preparation
 
 The [Mockupify guide](docs/mockupify.md) explains template and color mapping, the simulated export queue, Shopify ID capture, and how to reconcile an uncertain export.
+
+## Phase 6 Shopify read-only inspection
+
+The [Shopify read-only guide](docs/shopify-readonly.md) covers authorizing the dedicated app, inspecting products and variants, and comparing explicit Shopify bindings against Master Input.
