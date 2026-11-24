@@ -33,6 +33,8 @@ const help = `Tees-4 Production Worker
   shopify-hextom-verify <shopify-product-gid> [--verified-base-sku <sku>]
   shopify-production-audit <shopify-product-gid>
     [--candidate-base-sku <sku> | --verified-source <record.json> [--read-master-input [--header-row <number>]]]
+  shopify-sku-preview <shopify-product-gid> --shop-id <shop-gid> --row <number> --product-sku <sku> --artwork-sku <sku>
+    --diagnostic | --confirmations <owner.json> [--header-row <number>]
   shopify-reconcile <shopify-product-gid> --product-sku <sku> --artwork-sku <sku> --evidence-ref <ref>
     [--row <number>] [--verified-source <record.json>] [--sheet-fixture <fixture.json> | --header-row <number>]
   shopify-identify

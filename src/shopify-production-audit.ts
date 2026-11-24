@@ -1,9 +1,8 @@
-import { isDeepStrictEqual } from 'node:util';
 import type { MasterInputProductionRow } from './google-sheets.js';
-import { WorkerError } from './model.js';
 import { verifyHextom } from './shopify-hextom.js';
 import { reconcileShopifySource } from './shopify-reconciliation.js';
 import type { SheetEvidence, VerifiedSource } from './shopify-reconciliation.js';
+import { readStableShopifyProduct } from './shopify-readonly.js';
 import type { ProductRead, ShopifyReadonlyClient } from './shopify-readonly.js';
 
 type ProductionStage = 'SKU_PREPARATION_IN_PROGRESS' | 'READY_FOR_HEXTOM' | 'HEXTOM_PROCESSING_OR_PENDING'
@@ -98,15 +97,7 @@ function stageReport(shopId: string, product: ProductRead, source: AuditSource) 
 export async function auditShopifyProduction(
   client: Pick<ShopifyReadonlyClient, 'product'>, shopId: string, productId: string, source: AuditSource = {},
 ) {
-  let initial: ProductRead | undefined;
-  try {
-    initial = await client.product(productId);
-    const current = await client.product(productId);
-    // Include variant data and tags in the comparison even when Shopify reports identical timestamps.
-    if (isDeepStrictEqual(initial, current)) return stageReport(shopId, current, source);
-  } catch (error) {
-    if (!(error instanceof WorkerError) || (error.code !== 'SHOPIFY_PRODUCT_CHANGED'
-      && !(initial && error.code === 'SHOPIFY_PRODUCT_NOT_FOUND'))) throw error;
-  }
+  const current = await readStableShopifyProduct(client, productId);
+  if (current) return stageReport(shopId, current, source);
   return { status: 'NEEDS_RECONCILIATION' as const, observedStage: null, shopId, productId, issues: ['SHOPIFY_SNAPSHOT_CHANGED'] };
 }

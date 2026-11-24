@@ -80,7 +80,9 @@ export function parseSheetFixture(input: unknown): SheetEvidence {
   return { kind: 'fixture', reference: requiredText(provenance.reference, 'Fixture provenance reference'), rows };
 }
 
-function sheetFinding(source: SheetEvidence, request: ReconciliationRequest, expectedRow?: number) {
+export function findMasterInputSkuRow(
+  source: SheetEvidence, request: Pick<ReconciliationRequest, 'productSku' | 'artworkSku'>, expectedRow?: number,
+) {
   if (source.kind === 'unavailable') {
     return { status: 'UNAVAILABLE' as const, source: source.kind, authoritative: false, code: source.code, message: source.message };
   }
@@ -104,7 +106,7 @@ export function reconcileShopifySource(
   request: ReconciliationRequest, shopId: string, product: ProductRead, sheet: SheetEvidence, verifiedSource?: VerifiedSource,
 ) {
   if (product.id !== request.productId) throw new WorkerError('SHOPIFY_PRODUCT_MISMATCH', 'The retrieved product does not match the requested GID.');
-  const masterInputFinding = sheetFinding(sheet, request, request.rowNumber ?? verifiedSource?.rowNumber);
+  const masterInputFinding = findMasterInputSkuRow(sheet, request, request.rowNumber ?? verifiedSource?.rowNumber);
   const recordMatches = verifiedSource !== undefined
     && verifiedSource.shopId === shopId && verifiedSource.productId === request.productId
     && verifiedSource.productSku === request.productSku && verifiedSource.artworkSku === request.artworkSku

@@ -10,6 +10,7 @@ import { discoverAdjustProducts, summarizeAdjustProduct } from '../src/shopify-a
 import { compareShopifyProduct, selectShopifyBinding, shopifyAssignment } from '../src/shopify-comparison.js';
 import { identifyShop, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from '../src/shopify-readonly.js';
 import type { ProductRead } from '../src/shopify-readonly.js';
+import { previewShopifySkus } from '../src/shopify-sku-preview.js';
 
 const env = {
   TEES4_SHOPIFY_DOMAIN: 'fixture.myshopify.com',
@@ -80,6 +81,24 @@ test('uses the supported grant and only fixed read queries while retrieving all 
     assert.match((await call.clone().json()).query, /^query Tees4Read/);
   }
   assert.deepEqual((await calls[3]!.json()).variables, { id, first: 100, after: 'page-2' });
+});
+
+test('SKU preview reads every Shopify page twice before returning diagnostic rows', async () => {
+  const { calls, client } = mocked([
+    response(grant), response({ data: identity }),
+    ...Array.from({ length: 2 }, () => [
+      response({ data: { product: product([variant(1)], 'page-2') } }),
+      response({ data: { product: product([variant(2, null)]) } }),
+    ]).flat(),
+  ]);
+  const result = await previewShopifySkus(client, config.shopId, {
+    shopId: config.shopId, productId: id, rowNumber: 2, productSku: '000710', artworkSku: '00042',
+  });
+  assert.equal(result.status, 'DIAGNOSTIC_ONLY');
+  assert.deepEqual(result.variants.map(item => item.variantId), [variant(1).id, variant(2).id]);
+  const bodies = await Promise.all(calls.slice(2).map(call => call.json()));
+  assert.ok(bodies.every(item => /^query Tees4ReadProduct\(/.test(item.query)));
+  assert.deepEqual(bodies.map(item => item.variables.after), [null, 'page-2', null, 'page-2']);
 });
 
 test('fails closed on auth, scope, identity and version failures', async () => {
@@ -241,6 +260,11 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
   assert.equal(stage.skuCounts.INITIAL, 1);
   assert.equal(stage.variantFindings.length, 1);
   assert.equal(stage.variantFindings[0].status, 'MISSING_SKU');
+  const preview = run('shopify-sku-preview', id, '--shop-id', config.shopId, '--row', '2', '--product-sku', '000710',
+    '--artwork-sku', '00042', '--diagnostic');
+  assert.equal(preview.status, 'DIAGNOSTIC_ONLY');
+  assert.equal(preview.futureWritesProtectedUntil, '2026-11-24T03:10:00.000Z');
+  assert.deepEqual(preview.counts, { UNCHANGED: 1, WOULD_ASSIGN: 0, NEEDS_REVIEW: 1 });
   const compare = ['examples/shopify-readonly-bindings.json', '2', 'examples/sheet-input.json', '--fixture'];
   assert.equal(run('shopify-compare', ...compare).status, 'sku_assignment_required');
   assert.equal(run('shopify-preview', ...compare).proposedAssignments.length, 1);

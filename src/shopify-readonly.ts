@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { requiredText } from './config.js';
 import { WorkerError } from './model.js';
 
@@ -421,5 +422,21 @@ export class ShopifyReadonlyClient {
       cursors.add(page.endCursor);
       after = page.endCursor;
     }
+  }
+}
+
+export async function readStableShopifyProduct(
+  client: Pick<ShopifyReadonlyClient, 'product'>, productId: string,
+): Promise<ProductRead | null> {
+  let initial: ProductRead | undefined;
+  try {
+    initial = await client.product(productId);
+    const current = await client.product(productId);
+    // Shopify timestamps have limited precision. Compare variant data and tags as well.
+    return isDeepStrictEqual(initial, current) ? current : null;
+  } catch (error) {
+    if (!(error instanceof WorkerError) || (error.code !== 'SHOPIFY_PRODUCT_CHANGED'
+      && !(initial && error.code === 'SHOPIFY_PRODUCT_NOT_FOUND'))) throw error;
+    return null;
   }
 }

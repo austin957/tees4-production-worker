@@ -11,6 +11,7 @@ import { auditShopifyProduction } from './shopify-production-audit.js';
 import { parseSheetFixture, parseVerifiedSource, reconcileShopifySource } from './shopify-reconciliation.js';
 import type { ReconciliationRequest, SheetEvidence } from './shopify-reconciliation.js';
 import { identifyShop, shopifyGid, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from './shopify-readonly.js';
+import { previewShopifySkus } from './shopify-sku-preview.js';
 
 export const shopifyCommands = {
   'shopify-auth': {},
@@ -22,6 +23,11 @@ export const shopifyCommands = {
   'shopify-production-audit': {
     'candidate-base-sku': { type: 'string' }, 'verified-source': { type: 'string' },
     'read-master-input': { type: 'boolean' }, 'header-row': { type: 'string' },
+  },
+  'shopify-sku-preview': {
+    'shop-id': { type: 'string' }, row: { type: 'string' }, 'product-sku': { type: 'string' },
+    'artwork-sku': { type: 'string' }, confirmations: { type: 'string' }, 'header-row': { type: 'string' },
+    diagnostic: { type: 'boolean' },
   },
   'shopify-reconcile': {
     'product-sku': { type: 'string' }, 'artwork-sku': { type: 'string' }, 'evidence-ref': { type: 'string' },
@@ -134,6 +140,22 @@ export async function runShopifyCommand(command: string, args: string[], values:
     }
     const verifiedSource = parseVerifiedSource(readJson(requiredText(recordPath, 'Verified source path'), 'verified source record'));
     return auditShopifyProduction(client, config.shopId, productId, { verifiedSource, sheet: await readProductionSheet(values) });
+  }
+  if (command === 'shopify-sku-preview') {
+    const diagnostic = values.diagnostic === true;
+    const path = values.confirmations;
+    if ((diagnostic && (path !== undefined || values['header-row'] !== undefined)) || (!diagnostic && path === undefined)) {
+      throw new WorkerError('CLI_USAGE', 'Use either --diagnostic or --confirmations <owner.json> with an optional --header-row.');
+    }
+    const binding = {
+      productId: shopifyGid(args[0], 'Product'), shopId: shopifyGid(values['shop-id'], 'Shop'),
+      rowNumber: readRowNumber(values.row, 'Physical Master Input row'),
+      productSku: requiredText(values['product-sku'], 'Source Product SKU'),
+      artworkSku: requiredText(values['artwork-sku'], 'Source Artwork SKU'),
+    };
+    if (diagnostic) return previewShopifySkus(client, config.shopId, binding);
+    const confirmations = parseOwnerConfirmations(readJson(requiredText(path, 'Owner confirmations path'), 'owner confirmations'));
+    return previewShopifySkus(client, config.shopId, binding, { confirmations, sheet: await readSourceSheet(values) });
   }
   if (command === 'shopify-reconcile') {
     const request: ReconciliationRequest = {

@@ -20,6 +20,12 @@ export interface OwnerConfirmation {
   confirmedBy: string;
 }
 
+export function sharesOwnerAssignment(
+  first: Pick<OwnerConfirmation, 'rowNumber' | 'productId' | 'productSku'>, second: OwnerConfirmation,
+): boolean {
+  return first.rowNumber === second.rowNumber || first.productId === second.productId || first.productSku === second.productSku;
+}
+
 function physicalRow(value: unknown): number {
   return integer(value, 'Physical Master Input row', 1, Number.MAX_SAFE_INTEGER);
 }
@@ -185,8 +191,7 @@ export function matchShopifyProducts(
     if (!row) issues.push('MASTER_INPUT_ROW_NOT_FOUND');
     else if (row.productSku !== confirmation.productSku || row.artworkSku !== confirmation.artworkSku) issues.push('MASTER_INPUT_SKU_MISMATCH');
     if (!product) issues.push('SHOPIFY_PRODUCT_NOT_FOUND');
-    if (confirmations.filter(other => other.rowNumber === confirmation.rowNumber || other.productId === confirmation.productId
-      || other.productSku === confirmation.productSku).length > 1) issues.push('DUPLICATE_OWNER_ASSIGNMENT');
+    if (confirmations.filter(other => sharesOwnerAssignment(confirmation, other)).length > 1) issues.push('DUPLICATE_OWNER_ASSIGNMENT');
     const variantIds = product?.variants.map(variant => variant.id) ?? [];
     if (row && product) {
       issues.push(...matchConflicts(row, product, skuSignal(row, product)));

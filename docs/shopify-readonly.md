@@ -108,6 +108,22 @@ A supplied candidate SKU supports a comparison of the stored variant values. The
 
 The audit compares two complete Shopify reads, including the SKU, option and tag data. If a product changes during pagination or between snapshots, run a fresh audit. The command performs reads only. The existing daily **4:20 PM inclusive to 9:10 PM exclusive America/Chicago** protection for exports and initial SKU writes still applies.
 
+## Preview initial SKU assignments
+
+```sh
+npm run --silent worker -- shopify-sku-preview <product-gid> \
+  --shop-id <shop-gid> --row <physical-row> --product-sku <product-sku> --artwork-sku <artwork-sku> \
+  --confirmations /path/to/owner-confirmations.json
+```
+
+Use the [owner confirmation format](shopify-product-matching.md#owner-confirmation) and include the current set of known confirmations so the command can detect conflicting product GIDs, rows, or Product SKUs. The owner independently verifies the row-to-product linkage. The command checks the authenticated Shopify shop and rechecks the physical row and exact H/K values against live Master Input. Repeated Product SKUs on Master Input block the proposal even if the requested row matches. Set `--header-row` if the header is below row 1. A deleted Mockupify export record is unnecessary when other trusted evidence supports the owner confirmation.
+
+Use `--diagnostic` in place of `--confirmations` to compare a supplied row and SKUs against Shopify. It skips the Master Input request and emits zero `WOULD_ASSIGN` actions. An exact string match in diagnostic mode is displayed as `UNCHANGED` while the binding remains unverified.
+
+The preview reads the complete Shopify product twice and suppresses the plan if the snapshots differ. Each variant row includes its GID, Color, Size, exact current SKU, proposed base SKU when applicable, and action. `WOULD_ASSIGN` applies only to blank SKUs on a verified, unambiguous product with the exact lowercase `adjust` tag and no detected Hextom transformation. `UNCHANGED` identifies a matching base or a verified final SKU. `NEEDS_REVIEW` identifies unexpected nonblank values and variants affected by blocked assignments. Any detected transformation of the expected base, including a repeated or suspect suffix, blocks assignments for the whole product.
+
+Before any future write, obtain explicit batch approval, re-read the binding, SKU and Hextom state, and check the daily **4:20 PM inclusive to 9:10 PM exclusive America/Chicago** protected window immediately before writing. A nonblank replacement additionally requires separate owner approval of the exact variant GID, current SKU, and intended replacement. The preview can run during the protected window and performs reads only.
+
 ## Compare a binding with Master Input
 
 Prepare a binding manifest using the IDs verified during Mockupify reconciliation or independently verified in Shopify. The [example manifest](../examples/shopify-readonly-bindings.json) extends the Phase 5 binding with the shop GID and the complete expected variants. Record the physical row, both assigned SKUs, and the Mockupify export reference when available. Use the exact Shopify option names if they differ from `Size` or `Color`. A null expected option value declares that the variant should have no such option.
