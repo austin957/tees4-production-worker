@@ -4,6 +4,7 @@ import { simulatedAdapters } from './adapters.js';
 import { object, onlyKeys, parseMode, readJson, settings } from './config.js';
 import { googleSheets, parseSheetPolicy, previewSheetArtwork } from './google-sheets.js';
 import { runMockupifyExport } from './export-runner.js';
+import { mockupifyCommands, runMockupifyCommand } from './mockupify-cli.js';
 import { planMockupifyExport, simulatedMockupifyExports } from './mockupify.js';
 import { asWorkerError, WorkerError } from './model.js';
 import { bindingCommands, runBindingCommand } from './product-binding-cli.js';
@@ -35,6 +36,12 @@ const help = `Tees-4 Production Worker
   binding-review <binding-id> reject --by <operator> --reason <reason>
   binding-review <binding-id> recheck --by <operator> [--header-row <number>]
   shopify-post-hextom <binding-id>
+  mockupify-auth
+  mockupify-batches
+  mockupify-designs [batch-id]
+  mockupify-products
+  mockupify-exports
+  mockupify-export <export-id>
   shopify-auth
   shopify-adjust [shopify-product-gid]
   shopify-match [--confirmations <owner.json>] [--sheet-fixture <fixture.json> | --header-row <number>]
@@ -73,6 +80,7 @@ async function main(): Promise<void> {
 
   const commandOptions = {
     ...shopifyCommands,
+    ...mockupifyCommands,
     ...bindingCommands,
     submit: { mode: { type: 'string' } },
     'submit-sheet': { mode: { type: 'string' } },
@@ -99,6 +107,11 @@ async function main(): Promise<void> {
   const { positionals, values } = parsed;
   if (Object.hasOwn(shopifyCommands, command)) {
     const result = await runShopifyCommand(command, positionals, values);
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (Object.hasOwn(mockupifyCommands, command)) {
+    const result = await runMockupifyCommand(command as keyof typeof mockupifyCommands, positionals);
     console.log(JSON.stringify(result, null, 2));
     return;
   }
