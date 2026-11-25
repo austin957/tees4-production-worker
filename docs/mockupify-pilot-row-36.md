@@ -1,6 +1,6 @@
 # Row 36 supervised pilot preflight
 
-Phase 21B cleared the Shopify publication read-access blocker. Phase 21C records the owner's Hextom task observations. Live Mockupify export dispatch remains disabled pending a verified Hextom-safe interval and the artwork, metadata, storage and authorization prerequisites below.
+Phase 21B cleared the Shopify publication read-access blocker. Phase 21D confirms the configured Hextom schedule timezone. The run-history display timezone and a safe interval for the pilot remain unverified. Live Mockupify export dispatch remains disabled pending a verified Hextom-safe interval and the artwork, metadata, storage and authorization prerequisites below.
 
 ## Owner approval record
 
@@ -30,11 +30,13 @@ The November 25, 2026 Phase 21 instructions and Phase 21A clarification are the 
 
 ## Hextom publication timing
 
-The owner inspected the active scheduled Hextom Bulk Product Edit task for **Channel Availability**. The schedule, run history and filter details below are owner-supplied observations. They have no independent API authentication.
+The owner's Phase 21D screenshot of the Hextom Bulk Product Edit scheduling interface confirms the configured schedule for the active **Channel Availability** task. The run history and filters are the owner's Phase 21C observations. This evidence comes from the Hextom interface as reported by the owner.
 
-| Evidence | Owner observation |
+| Evidence | Displayed value |
 | --- | --- |
-| Displayed schedule | Run daily at 7:00 PM (local time) |
+| Configured frequency | Daily |
+| Configured run time | 7:00 PM |
+| Configured timezone | (GMT-6) America/Chicago |
 | November 24, 2026 run history | Started approximately 6:00 PM and edited 91 products |
 | November 23, 2026 run history | Started approximately 6:01 PM and edited 35 products |
 
@@ -46,9 +48,9 @@ The task uses **ALL** of these conditions:
 
 The task publishes qualifying products to Online Store, Facebook & Instagram, Shop, Faire, Inbox, and Google & YouTube. Treat any Active product carrying `adjust` as potentially eligible. If the pilot relies on filter exclusion, verify that the exact exported product will stay excluded throughout the test. The previously observed 6:15 PM SKU transformation and 9:00 PM tag removal are separate tasks and provide no verified timing for channel assignment.
 
-The difference between the displayed schedule and the run history remains unresolved. Approximately **6:00 PM as shown in the run history** is the earliest observed start. The available evidence cannot place it in America/Chicago or establish an earliest future run. For dispatch planning, treat exposure as possible as soon as the exported product qualifies. A queued or running eligible task could publish it before the first Shopify read. There is no verified safe interval.
+The configured **7:00 PM America/Chicago** run falls within the protected window. The run-history display timezone remains unverified. Approximately **6:00 PM as shown in the run history** is the earliest displayed start among the supplied entries. The difference between the displayed times remains unexplained, and the earliest possible future execution is still unverified. For dispatch planning, treat exposure as possible as soon as the exported product qualifies. A queued or running eligible task could publish it before the first Shopify read.
 
-Before any future dispatch, use read-only evidence to confirm the timezone used for both the task schedule and run history, explain the observed difference, and check for queued or running instances. Verify the earliest eligible run and record a safe interval with explicit start and end times and the minimum time needed for export and observation. The entire test must finish before any eligible publication run. Hold if timing, eligibility, or the full interval remains unverified. Keep the Hextom task enabled with its existing configuration. Separately, the daily protected window remains **4:20 PM inclusive to 9:10 PM exclusive America/Chicago**, with the configured export safety margin before cutoff. [Hextom scheduled tasks](https://bpe-help-center.hextom.com/article/732-tutorials-on-using-scheduled-tasks-bpe)
+Before any future dispatch, use read-only evidence to confirm the run-history display timezone, reconcile the historical starts with the configured schedule, and check for queued or running instances. Verify the earliest eligible run and record a safe interval with explicit start and end times and the minimum time needed for export and observation. The entire test must finish before any eligible publication run. Hold if timing, eligibility, or the full interval remains unverified. Keep the Hextom task enabled with its existing configuration. Separately, the daily protected window remains **4:20 PM inclusive to 9:10 PM exclusive America/Chicago**, with the configured export safety margin before cutoff. [Hextom scheduled tasks](https://bpe-help-center.hextom.com/article/732-tutorials-on-using-scheduled-tasks-bpe)
 
 Read the APP publication connection for the exact exported Shopify Product GID immediately after export, during the supervised test, and again before the verified interval ends. Include current and staged publications. Hold if any are observed, publication evidence is unavailable, or the interval expires before completion. An empty publication read describes only that moment. Confirm the product's disposition with the owner before any separately authorized cleanup.
 
