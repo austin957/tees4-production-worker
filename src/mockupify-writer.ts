@@ -16,6 +16,7 @@ import type {
 import { assertExportWindow } from './production-schedule.js';
 import { readStableShopifyProduct, shopifyGid } from './shopify-readonly.js';
 import type { ProductRead, ShopifyReadonlyClient } from './shopify-readonly.js';
+import { masterInput } from './sheets.js';
 import type { Store } from './store.js';
 
 const requestTimeout = 15_000;
@@ -30,6 +31,7 @@ type Reader = ReturnType<typeof mockupifyReadOnly>;
 type DesignEvidence = ReturnType<typeof parseDesignEvidence>;
 type ExportEvidence = ReturnType<typeof parseExportDetail>;
 type ShopifyReader = Pick<ShopifyReadonlyClient, 'verifyShop' | 'productForExport' | 'verifyExportPublicationAccess'>;
+type SourceIdentity = Pick<SupervisedSourceRow, 'sourceRow' | 'productSku' | 'artworkSku' | 'garment'>;
 export type MockupifyRecoveryEvidence = {
   operation: 'create_batch' | 'upload_design'; remoteId: number; requestDigest: string;
   by: string; evidence: string; dispatcherStoppedEvidence: string; artworkSha256?: string;
@@ -228,20 +230,24 @@ export class SupervisedMockupifyWriter {
     return identity;
   }
 
-  private async readSource(productSku: string) {
-    const read = this.options.readSource ?? (this.mode === 'production' ? readMasterInputSupervisedRows : undefined);
-    const rows = await read?.();
-    const matches = rows?.filter(row => row.productSku === productSku);
-    if (matches?.length !== 1) {
-      return stop('MOCKUPIFY_SOURCE_CHANGED', 'Recheck a unique Product SKU on the physical Master Input row.');
+  private async verifySource(expected: SourceIdentity) {
+    const read = this.mode === 'production' ? readMasterInputSupervisedRows : this.options.readSource;
+    const rows = (await read?.()) ?? [];
+    const matches = rows.filter(row => row.productSku === expected.productSku);
+    const source = matches[0];
+    if (matches.length !== 1 || !source || !nonblank(expected.productSku) || !nonblank(expected.artworkSku) ||
+      !nonblank(expected.garment) || !Number.isSafeInteger(expected.sourceRow) || expected.sourceRow < 2 ||
+      source.sourceRow !== expected.sourceRow || source.artworkSku !== expected.artworkSku ||
+      source.garment !== expected.garment || rows.filter(row => row.sourceRow === expected.sourceRow).length !== 1) {
+      return stop('MOCKUPIFY_SOURCE_CHANGED', 'Verify a unique Product SKU, the Artwork SKU and garment on the selected physical Master Input row.');
     }
-    return matches[0]!;
+    return source;
   }
 
   async prepare(input: unknown, review: MockupifyReview, png: Uint8Array): Promise<MockupifyJournal> {
     if (this.mode === 'dry_run') stop('MOCKUPIFY_DRY_RUN', 'Dry-run mode does not register a dispatchable plan.');
     const prepared = parseMockupifyPreparationInput(input);
-    const source = await this.readSource(prepared.source.productSku);
+    const source = await this.verifySource(prepared.source);
     const { spreadsheetId: _spreadsheet, evidence: _evidence, ...expected } = prepared.source;
     if (!Object.entries(expected).every(([key, value]) => source[key as keyof SupervisedSourceRow] === value)) {
       stop('MOCKUPIFY_SOURCE_CHANGED', 'The supplied preparation does not match the current physical row.');
@@ -264,10 +270,15 @@ export class SupervisedMockupifyWriter {
     return this.options.store.registerMockupifyPlan(plan);
   }
 
-  private async verifySourceAndCatalog(plan: SupervisedMockupifyPlan) {
-    if (!isDeepStrictEqual(await this.readSource(plan.correlation.productSku), plan.source)) {
+  private async verifyPlanSource(plan: SupervisedMockupifyPlan) {
+    const { correlation, source } = plan;
+    if (correlation.spreadsheetId !== masterInput.spreadsheetId ||
+      !isDeepStrictEqual(await this.verifySource({ ...correlation, garment: source.garment }), source)) {
       stop('MOCKUPIFY_SOURCE_CHANGED', 'The physical Master Input row or exact metadata changed after approval.');
     }
+  }
+
+  private async verifyCatalog(plan: SupervisedMockupifyPlan) {
     const approved = approvedConfig();
     const catalog = await this.reads.listProducts();
     const mapping = approved.config.mappings.find(entry => entry.garment === plan.source.garment);
@@ -325,26 +336,26 @@ export class SupervisedMockupifyWriter {
     if (operation === 'upload_design' && (!bytes || sha256(bytes) !== plan.correlation.preparedArtworkSha256)) {
       stop('MOCKUPIFY_PNG_EVIDENCE_MISMATCH', 'The upload bytes must match the reviewed PNG.');
     }
-    await this.verifySourceAndCatalog(plan);
+    await this.verifyPlanSource(plan);
+    await this.verifyCatalog(plan);
     let remoteActive: number[] = [];
     if (operation === 'create_batch') {
       if ((await this.reads.listBatches()).some(batch => batch.name === plan.correlation.batchName) ||
         (await this.reads.listDesigns()).some(design => design.designReference === plan.correlation.designReference)) {
         stop('MOCKUPIFY_RECONCILIATION_REQUIRED', 'The correlation is already visible in Mockupify.');
       }
-    } else {
-      if (operation === 'start_export') {
-        await this.options.shopify.verifyExportPublicationAccess();
-        const exports = await this.reads.listExports();
-        if (exports.some(entry => entry.batch?.id === journal.batchId)) {
-          stop('MOCKUPIFY_RECONCILIATION_REQUIRED', 'An export already exists for the isolated batch.');
-        }
-        remoteActive = exports.filter(entry => entry.status === 'generating_images' || entry.status === 'exporting')
-          .map(entry => entry.id);
+    } else if (operation === 'start_export') {
+      await this.options.shopify.verifyExportPublicationAccess();
+      const exports = await this.reads.listExports();
+      if (exports.some(entry => entry.batch?.id === journal.batchId)) {
+        stop('MOCKUPIFY_RECONCILIATION_REQUIRED', 'An export already exists for the isolated batch.');
       }
-      await this.confirmBatch(journal, operation === 'start_export' ? 1 : 0);
+      remoteActive = exports.filter(entry => entry.status === 'generating_images' || entry.status === 'exporting')
+        .map(entry => entry.id);
     }
 
+    await this.verifyPlanSource(plan);
+    if (operation !== 'create_batch') await this.confirmBatch(journal, operation === 'start_export' ? 1 : 0);
     const claim: MockupifyClaim = {
       request: preview.request, requestDigest: preview.requestDigest, approval: reviewedApproval,
       state: 'dispatching', claimedAt: this.clock(), designId: journal.designId,

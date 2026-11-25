@@ -1,4 +1,4 @@
-# Row 36 supervised pilot preflight
+# Row 9 supervised pilot preflight
 
 Phase 21B cleared the Shopify publication read-access blocker. Phase 21D confirms the configured Hextom schedule timezone. The run-history display timezone and a safe interval for the pilot remain unverified. Live Mockupify export dispatch remains disabled pending a verified Hextom-safe interval and the artwork, metadata, storage and authorization prerequisites below.
 
@@ -8,7 +8,7 @@ The November 25, 2026 Phase 21 instructions and Phase 21A clarification are the 
 
 | Field | Approved or preserved value |
 | --- | --- |
-| Source | Design Input Master → Master Input, physical row 36 |
+| Source | Design Input Master (`1UxdIY03ICu5t2G0fEo0nor6-giAEF4xdMuNEvYN_JMM`) → Master Input, physical row 9 |
 | Original artwork-name cell | `SKU TEST`, preserved verbatim |
 | Customer-facing Shopify title | `Bold Arrow Emblem` |
 | Artwork SKU and Product SKU | `8419620257` and `8419620257-S105` |
@@ -20,8 +20,8 @@ The November 25, 2026 Phase 21 instructions and Phase 21A clarification are the 
 
 ## Evidence and limits
 
-- Connected Sheets reads verified the exact row, its blank completion cell, its one Product SKU match across the full Master Input Product SKU column, and the matching title and Artwork SKU in Artwork SKU Registry row 45. The production adapter now accepts the observed column A header. Its separate runtime Google credential exchange must also succeed before supervised dispatch can recheck the source.
-- The Drive file referenced on row 36 was retrieved and decoded. The original is a 3300 × 2137 RGBA PNG, 1,542,125 bytes, above the worker's 1,500,000-byte upload limit. The reviewed compressed bytes and their SHA-256 remain outstanding. Keep the original and decoded pixel hashes with the private operational evidence.
+- The owner supplied the corrected physical row and its values for columns A, B, E, H and K. The CLI dry-run uses that offline fixture. Supervised preparation and dispatch require a fresh read through the worker's read-only Sheets adapter to verify the physical row, its unique Product SKU, its Artwork SKU and garment, and the rest of the approved source data.
+- The previously reviewed original artwork is a 3300 × 2137 RGBA PNG, 1,542,125 bytes, above the worker's 1,500,000-byte upload limit. Confirm the corrected row's artwork reference before relying on the earlier review. The reviewed compressed bytes and their SHA-256 remain outstanding. Keep the original and decoded pixel hashes with the private operational evidence.
 - The authenticated Mockupify template read confirmed both color IDs on template `10779`, each with a base price of `18.99` and sizes X-Small, Small, Medium, Large, X-Large, 2X-Large and 3X-Large. Those selections project 14 color/size combinations. The API exposes neither size price adjustments nor final option ordering.
 - The Shopify read-only client verified the shop GID. Mockupify's authenticated OpenAPI contract exposes no connected-shop read. Obtain independent evidence of the account's current Shopify destination. The export request has only `batch` and `colors` fields.
 - The owner confirmed that Mockupify creates an **Active** Shopify product with **zero sales-channel publications** and an existing Hextom automation later assigns channels. In Phase 21B, Shopify Admin GraphQL `2026-10` returned `gid://shopify/Shop/76973965603` and reported exactly `read_products` and `read_publications` for the export verification app. The worker's publication query returned valid data for a sample product. The pilot still requires a direct read of the exact exported Product GID showing zero current or staged sales-channel publications. [Shopify Product publication fields](https://shopify.dev/docs/api/admin-graphql/latest/objects/product#field-Product.fields.resourcePublicationsV2)

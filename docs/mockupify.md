@@ -1,6 +1,6 @@
 # Mockupify reads and export preparation
 
-The [Phase 20 supervised writer](mockupify-writer.md) implements the requests in simulation and documents recovery and the offline row 36 trace.
+The [Phase 20 supervised writer](mockupify-writer.md) implements the requests in simulation and documents recovery and the offline row 9 trace.
 
 ## Integration capabilities
 

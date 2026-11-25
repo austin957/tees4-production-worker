@@ -4,18 +4,23 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { GoogleAuth } from 'google-auth-library';
 import { readMasterInputSupervisedRows } from '../src/google-sheets.js';
-import { row36MockupifyDryRun } from '../src/mockupify-writer-cli.js';
+import { pilotMockupifyDryRun } from '../src/mockupify-writer-cli.js';
 import { previewMockupifyOperation } from '../src/mockupify-writer.js';
 import { WorkerError } from '../src/model.js';
 import { Store } from '../src/store.js';
 import { FakeMockupify, initialTime, input, png, prepare, productGid, readyToExport, review, shop } from './mockupify-writer-fixture.js';
 
-test('row 36 dry run preserves the source name, approved colors and publication expectations without claiming operations', () => {
-  const trace = row36MockupifyDryRun();
-  assert.equal(trace.source.sheetArtworkName, 'SKU TEST');
-  assert.equal(trace.source.artworkRegistryName, 'Bold Arrow Emblem');
-  assert.equal(trace.source.artworkNameDiscrepancy, 'preserved_source_name');
+test('the offline pilot dry run identifies row 9 and preserves the source artwork name and Shopify title', () => {
+  const trace = pilotMockupifyDryRun();
+  assert.match(trace.evidence, /row 9 fixture/);
+  assert.deepEqual(trace.source, {
+    spreadsheetId: '1UxdIY03ICu5t2G0fEo0nor6-giAEF4xdMuNEvYN_JMM', worksheet: 'Master Input', row: 9,
+    sheetArtworkName: 'SKU TEST', productTitle: 'Bold Arrow Emblem', artworkRegistryName: 'Bold Arrow Emblem',
+    artworkNameDiscrepancy: 'preserved_source_name', productSku: '8419620257-S105', artworkSku: '8419620257',
+    garment: 'Adult Tank Top',
+  });
   assert.equal(trace.template.templateId, 10779);
   assert.deepEqual(trace.colors.map(color => [color.id, color.review]), [[20514, 'owner_approved'], [20515, 'owner_approved']]);
   assert.deepEqual(trace.trace.at(-1), {
@@ -25,6 +30,66 @@ test('row 36 dry run preserves the source name, approved colors and publication 
   assert.equal(trace.executionAuthorized, false);
   assert.equal(trace.httpRequests, 0);
   assert.equal(trace.journalClaims, 0);
+});
+
+test('preparation rejects a stale selected row, then accepts the same identifiers at their verified physical row', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const source = api.rows[0]!;
+  source.sourceRow = 27;
+  api.rows.push({ ...source, sourceRow: input.source.row, productSku: '000124-S105' });
+  await assert.rejects(api.writer(store).prepare(input, review, png), { code: 'MOCKUPIFY_SOURCE_CHANGED' });
+  assert.deepEqual(api.requests, []);
+
+  const journal = await api.writer(store).prepare({ ...input, source: { ...input.source, row: 27 } }, review, png);
+  assert.equal(journal.plan.correlation.sourceRow, 27);
+  assert.equal(journal.plan.source.sheetArtworkName, 'Fixture artwork');
+  assert.equal(journal.plan.source.title, 'Fixture title');
+});
+
+test('dispatch rejects missing, ambiguous or mismatched Sheet identities before requests or claims', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const id = await prepare(store, api);
+  const source = api.rows[0]!;
+  const writer = api.writer(store);
+  const approval = api.approve(store, id, 'create_batch');
+  api.requests.length = 0;
+  for (const rows of [
+    [], [{ ...source, sourceRow: 36 }], [{ ...source, productSku: 'different' }],
+    [{ ...source, artworkSku: 'different' }], [{ ...source, garment: 'Adult Shirt' }],
+    [source, { ...source, sourceRow: 36 }], [source, { ...source, productSku: 'different' }],
+  ]) {
+    api.rows = rows;
+    await assert.rejects(writer.dispatch(id, 'create_batch', approval), { code: 'MOCKUPIFY_SOURCE_CHANGED' });
+  }
+  assert.deepEqual(api.requests, []);
+  assert.deepEqual(store.getMockupifyJournal(id).claims, {});
+});
+
+test('dispatch rechecks the Sheet after vendor preflight before claiming the operation', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const id = await prepare(store, api);
+  api.beforeRead = () => { api.rows[0]!.sourceRow = 36; };
+  await assert.rejects(api.writer(store).dispatch(id, 'create_batch', api.approve(store, id, 'create_batch')),
+    { code: 'MOCKUPIFY_SOURCE_CHANGED' });
+  assert.deepEqual(api.posts, []);
+  assert.deepEqual(store.getMockupifyJournal(id).claims, {});
+});
+
+test('production preparation fails closed when the authoritative Sheet reader is unavailable', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const auth = t.mock.method(GoogleAuth.prototype, 'getClient', async () => { throw new Error('Fixture unavailable'); });
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('Unexpected live request'); });
+  await assert.rejects(api.writer(store, 'production').prepare(input, review, png), { code: 'GOOGLE_AUTH_UNAVAILABLE' });
+  assert.equal(auth.mock.callCount(), 1);
+  assert.equal(fetch.mock.callCount(), 0);
 });
 
 test('dry-run, wrong or expired approval, and unverified durability prevent all production POST attempts', async t => {

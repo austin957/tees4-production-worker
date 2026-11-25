@@ -18,19 +18,20 @@ export const mockupifyWriterCommands = {
   'mockupify-writer-backup': {},
 } as const;
 
-export function row36MockupifyDryRun() {
+export function pilotMockupifyDryRun() {
   const approved = parseApprovedMockupifyConfig(JSON.parse(readFileSync('config/mockupify-approved-v1.json', 'utf8')));
   const template = approved.config.mappings.find(mapping => mapping.garment === 'Adult Tank Top')!;
   const productSku = '8419620257-S105';
   const correlation = mockupifyCorrelation(masterInput.spreadsheetId, productSku);
   return {
     mode: 'dry_run',
-    evidence: 'Owner-supplied row 36 fixture',
+    evidence: 'Owner-supplied Master Input row 9 fixture',
     executionAuthorized: false,
     httpRequests: 0,
     journalClaims: 0,
     source: {
-      spreadsheetId: masterInput.spreadsheetId, row: 36, artworkSku: '8419620257', productSku,
+      spreadsheetId: masterInput.spreadsheetId, worksheet: masterInput.tab, row: 9,
+      artworkSku: '8419620257', productSku, garment: template.garment,
       sheetArtworkName: 'SKU TEST', productTitle: 'Bold Arrow Emblem', artworkRegistryName: 'Bold Arrow Emblem',
       artworkNameDiscrepancy: 'preserved_source_name',
     },
@@ -80,8 +81,8 @@ function recoveryEvidence(path: string): MockupifyRecoveryEvidence {
 export async function runMockupifyWriterCommand(command: string, args: string[], databasePath: string) {
   const [id, argument] = args;
   if (command === 'mockupify-writer-dry-run') {
-    if (args.length) throw new WorkerError('CLI_USAGE', 'The dry-run command uses only the row 36 fixture.');
-    return row36MockupifyDryRun();
+    if (args.length) throw new WorkerError('CLI_USAGE', 'The dry-run command uses only the offline pilot fixture.');
+    return pilotMockupifyDryRun();
   }
   const validArity = command === 'mockupify-writer-preview' ? args.length === 2 :
     command === 'mockupify-writer-reconcile' ? args.length === 1 || args.length === 2 : args.length === 1;
