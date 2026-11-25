@@ -35,6 +35,14 @@ function verifiedStage(hextom: Hextom): ProductionStage {
   return 'MANUAL_REVIEW';
 }
 
+export function assessProductionStage(comparison: Hextom, sourceVerified: boolean) {
+  return {
+    status: sourceVerified ? verifiedStage(comparison) : 'NEEDS_RECONCILIATION' as const,
+    observedStage: !sourceVerified && comparison.counts.INITIAL > 0 && preparingSkus(comparison)
+      ? 'SKU_PREPARATION_IN_PROGRESS' as const : null,
+  };
+}
+
 function sourceEvidence(source: AuditSource, shopId: string, product: ProductRead) {
   if (!('verifiedSource' in source)) {
     return { verifiedBaseSku: undefined, candidateBaseSku: source.candidateBaseSku, masterInput: null,
@@ -66,9 +74,7 @@ function stageReport(shopId: string, product: ProductRead, source: AuditSource) 
   const { verifiedBaseSku, candidateBaseSku, masterInput, sourceIssues } = evidence;
   // A candidate is used only to describe observed strings, with no authority to verify a stage.
   const comparison = verifyHextom(product, verifiedBaseSku ?? candidateBaseSku);
-  const status = verifiedBaseSku === undefined ? 'NEEDS_RECONCILIATION' : verifiedStage(comparison);
-  const observedStage = status === 'NEEDS_RECONCILIATION' && comparison.counts.INITIAL > 0 && preparingSkus(comparison)
-    ? 'SKU_PREPARATION_IN_PROGRESS' : null;
+  const { status, observedStage } = assessProductionStage(comparison, verifiedBaseSku !== undefined);
   const issues = [...new Set([...sourceIssues, ...comparison.issues])];
   if (!verifiedBaseSku && candidateBaseSku) issues.push('UNVERIFIED_CANDIDATE_BASE_SKU');
   if (status === 'HEXTOM_PROCESSING_OR_PENDING' && comparison.status === 'VERIFIED_COMPLETE') {

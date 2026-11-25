@@ -119,6 +119,11 @@ export class Store {
         CREATE TRIGGER IF NOT EXISTS binding_events_no_replace BEFORE INSERT ON product_binding_events
           WHEN EXISTS (SELECT 1 FROM product_binding_events WHERE sequence = NEW.sequence)
           BEGIN SELECT RAISE(ABORT, 'Product binding history is append-only'); END;
+        CREATE TABLE IF NOT EXISTS post_hextom_alerts (
+          id TEXT PRIMARY KEY,
+          binding_id TEXT NOT NULL REFERENCES product_bindings(id),
+          first_seen_at INTEGER NOT NULL
+        );
       `);
     } catch (error) {
       throw new WorkerError('DATABASE_OPEN', `Could not initialize the worker database: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -152,6 +157,23 @@ export class Store {
     const row = this.db.prepare('SELECT body FROM product_bindings WHERE id = ?').get(id);
     if (!row) throw new WorkerError('BINDING_NOT_FOUND', 'No product binding matches that ID.');
     return JSON.parse(row.body as string) as ProductBinding;
+  }
+
+  recordPostHextomAlerts(binding: ProductBinding, alertIds: readonly string[], now: number) {
+    return this.transaction(() => {
+      if (this.getProductBinding(binding.id).status !== binding.status) {
+        throw new WorkerError('BINDING_REVIEW_CONFLICT', 'The binding status changed during the report. Run it again.');
+      }
+      const insert = this.db.prepare(`
+        INSERT INTO post_hextom_alerts (id, binding_id, first_seen_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING
+      `);
+      const get = this.db.prepare('SELECT first_seen_at FROM post_hextom_alerts WHERE id = ?');
+      return [...new Set(alertIds)].map(id => {
+        const created = insert.run(id, binding.id, now).changes === 1;
+        const firstSeenAt = created ? now : get.get(id)!.first_seen_at as number;
+        return { id, created, firstSeenAt };
+      });
+    });
   }
 
   inspectProductBinding(id: string) {

@@ -2,12 +2,14 @@ import { integer, readJson, requiredText } from './config.js';
 import { readMasterInputSkuRows } from './google-sheets.js';
 import { WorkerError } from './model.js';
 import { parseBindingAssignment, proposeProductBinding, reviewProductBinding } from './product-bindings.js';
+import { reportPostHextom } from './shopify-post-hextom.js';
 import { shopifyReadConfig, ShopifyReadonlyClient } from './shopify-readonly.js';
 import type { Store } from './store.js';
 
 export const bindingCommands = {
   'binding-list': {},
   'binding-inspect': {},
+  'shopify-post-hextom': {},
   'binding-propose': { by: { type: 'string' } },
   'binding-review': {
     by: { type: 'string' }, source: { type: 'string' }, reason: { type: 'string' }, 'header-row': { type: 'string' },
@@ -24,6 +26,10 @@ export async function runBindingCommand(store: Store, command: string, args: str
   if (args.length !== expectedCount) throw new WorkerError('CLI_USAGE', 'Wrong number of binding arguments. Run worker help for usage.');
   if (command === 'binding-list') return store.listProductBindings();
   if (command === 'binding-inspect') return store.inspectProductBinding(args[0]!);
+  if (command === 'shopify-post-hextom') {
+    const { shopId, shopify } = shopifyEvidence();
+    return reportPostHextom(store, shopify, shopId, args[0]!);
+  }
   const by = requiredText(values.by, 'Operator supplied with --by');
   if (command === 'binding-propose') {
     const assignment = parseBindingAssignment(readJson(args[0]!, 'binding assignment'));

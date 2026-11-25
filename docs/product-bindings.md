@@ -46,4 +46,10 @@ Approval and recheck use the read-only connections. The worker checks the physic
 
 An unavailable live read, including Google authentication failure, records a failed verification and leaves the current status intact. Fixtures and candidate matches cannot authorize approval. Rejected and stale entries retain their history and release their reservations. Binding changes and their audit entries commit together. The registry does not update Shopify, Google Sheets, or column I.
 
+## Storage for unattended operation
+
+Before any unattended deployment, configure `TEES4_DATABASE` on durable storage that survives worker and environment replacement and supports SQLite locking and WAL. Back up and test restoration of the database, including the binding history and [post-Hextom alert records](shopify-readonly.md#report-post-hextom-exceptions). A Codex workspace file can support supervised pilots and process restarts. Treat its retention across environment replacement as unverified.
+
+## Requirements for future writes
+
 For any future write, require explicit write approval and run equivalent live checks immediately before writing. Confirm the approved shop/product GIDs, exact row and H/K values, targeted variant GIDs and options, and exact expected current and intended SKU strings. Preserve nonblank SKUs unless the exact overwrite is separately authorized, recheck Hextom state, and enforce the daily **4:20 PM inclusive to 9:10 PM exclusive America/Chicago** protected window. A registry approval or successful recheck supplies binding evidence only.

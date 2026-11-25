@@ -34,6 +34,7 @@ const help = `Tees-4 Production Worker
   binding-review <binding-id> approve --by <owner> --source <evidence-ref> [--header-row <number>]
   binding-review <binding-id> reject --by <operator> --reason <reason>
   binding-review <binding-id> recheck --by <operator> [--header-row <number>]
+  shopify-post-hextom <binding-id>
   shopify-auth
   shopify-adjust [shopify-product-gid]
   shopify-match [--confirmations <owner.json>] [--sheet-fixture <fixture.json> | --header-row <number>]

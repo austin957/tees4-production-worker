@@ -108,6 +108,18 @@ A supplied candidate SKU supports a comparison of the stored variant values. The
 
 The audit compares two complete Shopify reads, including the SKU, option and tag data. If a product changes during pagination or between snapshots, run a fresh audit. The command performs reads only. The existing daily **4:20 PM inclusive to 9:10 PM exclusive America/Chicago** protection for exports and initial SKU writes still applies.
 
+## Report post-Hextom exceptions
+
+```sh
+TEES4_DATABASE=/path/to/worker.sqlite npm run --silent worker -- shopify-post-hextom <binding-id>
+```
+
+Use the same [registry database](product-bindings.md) that contains the binding. An approved binding supplies a previously verified base SKU. The report uses that approval as stored and does not recheck Google Sheets. A proposed binding supplies a comparison candidate only. Its expected values appear under `expectedSkuCandidate`, and its production audit remains `NEEDS_RECONCILIATION`.
+
+The command compares two complete Shopify reads. It builds each expected SKU from the binding's Product SKU and the variant's actual option values in Shopify positions 1 and 2. The exceptions include the variant GID, options, exact current SKU, expected value or candidate, and reasons such as missing SKU, conflicting base, incorrect suffix, duplicate value, or repeated option suffix. An absent `adjust` tag with no matching transformation evidence is `PROCESSING_UNCONFIRMED`. Pre-Hextom preparation and ordinary pending processing are reported separately from exceptions.
+
+Actionable findings receive local alert IDs. The same binding, variant, SKU values, and reasons reuse an alert ID and its original first-seen time across processes. Each result indicates whether an alert was newly recorded. Pre-Hextom preparation, ordinary pending processing, and changing Shopify snapshots create no alerts. The command writes alert records only to SQLite. It performs Shopify reads, leaves the binding unchanged, and does not send notifications or make corrections. The daily **4:20 PM inclusive to 9:10 PM exclusive America/Chicago** write protection still applies to the production workflow.
+
 ## Preview initial SKU assignments
 
 ```sh
