@@ -1,6 +1,6 @@
 import { WorkerError } from './model.js';
 
-const origin = 'https://mockupify.io';
+export const mockupifyOrigin = 'https://mockupify.io';
 const pageSize = '500';
 const maxPages = 1000;
 const maxAttempts = 4;
@@ -75,7 +75,7 @@ function requestedId(id: number): number {
   return id;
 }
 
-function parseBatch(value: unknown): Batch {
+export function parseBatch(value: unknown): Batch {
   const raw = record(value, 'batch');
   return {
     id: integer(raw.id, 'batch.id'),
@@ -161,7 +161,7 @@ function parseExportProduct(value: unknown): ExportProduct {
   };
 }
 
-function parseExportDetail(value: unknown): ExportDetail {
+export function parseExportDetail(value: unknown): ExportDetail {
   const raw = record(value, 'export');
   return {
     ...parseExportSummary(raw),
@@ -192,10 +192,22 @@ function validateNext(value: unknown, current: URL, nextPage: number): void {
   if (actual.toString() !== expected.toString()) return malformed('pagination.next');
 }
 
-function retryDelay(header: string | null, attempt: number): number {
+export function mockupifyRetryDelay(header: string | null, attempt: number, now = Date.now()): number {
   if (header && /^\d+$/.test(header)) return Number(header) * 1000;
   const date = header ? Date.parse(header) : NaN;
-  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 1000 * 2 ** attempt;
+  return Number.isFinite(date) ? Math.max(0, date - now) : 1000 * 2 ** attempt;
+}
+
+export function parseDesignEvidence(value: unknown) {
+  const raw = record(value, 'design');
+  return {
+    ...parseDesign(value),
+    description: raw.description == null ? null : string(raw.description, 'design.description'),
+    extra_title: raw.extra_title == null ? null : string(raw.extra_title, 'design.extra_title'),
+    search_tags: raw.search_tags == null ? null : string(raw.search_tags, 'design.search_tags'),
+    vendor: raw.vendor == null ? null : string(raw.vendor, 'design.vendor'),
+    extra_price: raw.extra_price == null ? null : string(raw.extra_price, 'design.extra_price'),
+  };
 }
 
 export function mockupifyReadOnly(
@@ -209,7 +221,7 @@ export function mockupifyReadOnly(
   }
 
   async function read(path: ReadPath, query?: URLSearchParams): Promise<unknown> {
-    const url = new URL(path, origin);
+    const url = new URL(path, mockupifyOrigin);
     if (query) url.search = query.toString();
     for (let attempt = 0; ; attempt++) {
       let response: Response;
@@ -220,7 +232,8 @@ export function mockupifyReadOnly(
           redirect: 'error',
           signal: AbortSignal.timeout(15_000),
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof WorkerError && error.code === 'MOCKUPIFY_RATE_LIMITED') throw error;
         throw new WorkerError('MOCKUPIFY_CONNECTION_FAILED', 'The Mockupify HTTPS request failed.', true);
       }
 
@@ -237,7 +250,7 @@ export function mockupifyReadOnly(
         throw new WorkerError('MOCKUPIFY_AUTH_FAILED', `Mockupify rejected authentication or access (HTTP ${response.status}).`);
       }
       if (response.status === 429) {
-        const delay = retryDelay(response.headers.get('retry-after'), attempt);
+        const delay = mockupifyRetryDelay(response.headers.get('retry-after'), attempt);
         if (attempt + 1 < maxAttempts && delay <= maxRetryDelay) {
           await sleep(delay);
           continue;
@@ -259,11 +272,11 @@ export function mockupifyReadOnly(
       const items = array(raw.results, 'pagination.results');
       for (const item of items) results.push(parse(item));
       if (raw.next === null || raw.next === undefined) {
-        if (results.length < count) return malformed('pagination.next');
+        if (results.length !== count) return malformed('pagination.next');
         return results;
       }
       if (items.length === 0) return malformed('pagination.results');
-      const current = new URL(path, origin);
+      const current = new URL(path, mockupifyOrigin);
       current.search = query.toString();
       validateNext(raw.next, current, page + 1);
     }
@@ -273,6 +286,7 @@ export function mockupifyReadOnly(
   return {
     listBatches: () => list('/api/batches/', parseBatch),
     listDesigns: (batchId?: number) => list('/api/designs/', parseDesign, batchId),
+    listDesignEvidence: (batchId: number) => list('/api/designs/', parseDesignEvidence, batchId),
     listProducts: () => list('/api/products/', parseProduct),
     listExports: () => list('/api/exports/', value => parseExportSummary(record(value, 'export'))),
     async getExport(id: number) {

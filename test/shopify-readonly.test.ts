@@ -445,3 +445,22 @@ test('variant pagination rejects a product update between pages', async () => {
   ]);
   await assert.rejects(client.product(id), { code: 'SHOPIFY_PRODUCT_CHANGED' });
 });
+
+test('export reconciliation requests description and prices while existing binding snapshots keep their original shape', async () => {
+  const enriched = {
+    ...product([{ ...variant(1), price: '5.00' }]),
+    descriptionHtml: '<p>Fixture description</p>',
+  };
+  const { calls, client } = mocked([
+    response(grant), response({ data: identity }),
+    response({ data: { product: enriched } }), response({ data: { product: enriched } }),
+  ]);
+  const normal = await client.product(id);
+  assert.equal(Object.hasOwn(normal, 'descriptionHtml'), false);
+  assert.equal(Object.hasOwn(normal.variants[0]!, 'price'), false);
+  const forExport = await client.productForExport(id);
+  assert.equal(forExport.descriptionHtml, enriched.descriptionHtml);
+  assert.equal(forExport.variants[0]?.price, '5.00');
+  assert.doesNotMatch((await calls[2]!.json()).query, /descriptionHtml|\bprice\b/);
+  assert.match((await calls[3]!.json()).query, /^query Tees4ReadExportProduct/);
+});

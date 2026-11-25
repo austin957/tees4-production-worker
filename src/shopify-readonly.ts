@@ -64,16 +64,20 @@ const adjustCandidatesQuery = `query Tees4ReadAdjustCandidates($first: Int!, $af
   }
 }`;
 
-const productQuery = `query Tees4ReadProduct($id: ID!, $first: Int!, $after: String) {
+function productReadQuery(exportDetails: boolean) {
+  const operation = exportDetails ? 'Tees4ReadExportProduct' : 'Tees4ReadProduct';
+  return `query ${operation}($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {
-    id title handle status vendor productType publishedAt tags createdAt updatedAt
+    id title ${exportDetails ? 'descriptionHtml ' : ''}handle status vendor productType publishedAt tags createdAt updatedAt
     options { id name position optionValues { name } }
     variants(first: $first, after: $after) {
-      nodes { id sku selectedOptions { name value } }
+      nodes { id sku ${exportDetails ? 'price ' : ''}selectedOptions { name value } }
       pageInfo { hasNextPage endCursor }
     }
   }
 }`;
+
+}
 
 const provenanceQuery = `query Tees4ReadProvenance($id: ID!) {
   product(id: $id) {
@@ -89,7 +93,7 @@ const provenanceQuery = `query Tees4ReadProvenance($id: ID!) {
 
 const queries = {
   identity: shopQuery, products: productsQuery, adjustCandidates: adjustCandidatesQuery,
-  product: productQuery, provenance: provenanceQuery,
+  product: productReadQuery(false), exportProduct: productReadQuery(true), provenance: provenanceQuery,
 };
 
 export interface ProductSummary { id: string; title: string }
@@ -98,9 +102,11 @@ export interface ShopIdentity { id: string; domain: string; scopes: string[]; ap
 export interface ProductVariantRead {
   id: string | null;
   sku: string | null;
+  price?: string;
   selectedOptions: { name: string; value: string }[];
 }
 export interface ProductRead extends TaggedProduct {
+  descriptionHtml?: string;
   handle: string;
   vendor: string;
   productType: string;
@@ -376,20 +382,30 @@ export class ShopifyReadonlyClient {
     return product;
   }
 
-  async product(id: string): Promise<ProductRead> {
+  product(id: string): Promise<ProductRead> {
+    return this.readProduct(id, 'product');
+  }
+
+  productForExport(id: string): Promise<ProductRead> {
+    return this.readProduct(id, 'exportProduct');
+  }
+
+  private async readProduct(id: string, operation: 'product' | 'exportProduct'): Promise<ProductRead> {
     shopifyGid(id, 'Product');
     let result: ProductRead | undefined;
     let after: string | null = null;
     const cursors = new Set<string>();
     for (;;) {
-      const data = await this.verifiedQuery('product', { id, first: pageSize, after });
+      const data = await this.verifiedQuery(operation, { id, first: pageSize, after });
       const product = this.productRecord(data, id);
       const updatedAt = string(product.updatedAt);
       if (result && result.updatedAt !== updatedAt) {
         throw new WorkerError('SHOPIFY_PRODUCT_CHANGED', 'Shopify updated the product during variant pagination. Read it again.');
       }
       result ??= {
-        id, title: string(product.title), handle: string(product.handle), vendor: string(product.vendor),
+        id, title: string(product.title),
+        ...(operation === 'exportProduct' ? { descriptionHtml: string(product.descriptionHtml) } : {}),
+        handle: string(product.handle), vendor: string(product.vendor),
         productType: string(product.productType),
         status: string(product.status), publishedAt: nullableString(product.publishedAt), tags: array(product.tags).map(string),
         createdAt: string(product.createdAt), updatedAt,
@@ -408,6 +424,7 @@ export class ShopifyReadonlyClient {
         result.variants.push({
           id: variant.id === undefined || variant.id === null || variant.id === '' ? null : shopifyGid(variant.id, 'ProductVariant'),
           sku: nullableString(variant.sku),
+          ...(operation === 'exportProduct' ? { price: string(variant.price) } : {}),
           selectedOptions: array(variant.selectedOptions).map(item => {
             const option = record(item);
             return { name: string(option.name), value: string(option.value) };

@@ -5,6 +5,7 @@ import { object, onlyKeys, parseMode, readJson, settings } from './config.js';
 import { googleSheets, parseSheetPolicy, previewSheetArtwork } from './google-sheets.js';
 import { runMockupifyExport } from './export-runner.js';
 import { mockupifyCommands, previewMockupifyPlan, previewMockupifyPreparation, runMockupifyCommand } from './mockupify-cli.js';
+import { mockupifyWriterCommands, runMockupifyWriterCommand } from './mockupify-writer-cli.js';
 import { planMockupifyExport, simulatedMockupifyExports } from './mockupify.js';
 import { asWorkerError, WorkerError } from './model.js';
 import { bindingCommands, runBindingCommand } from './product-binding-cli.js';
@@ -42,6 +43,11 @@ const help = `Tees-4 Production Worker
   mockupify-products
   mockupify-exports
   mockupify-export <export-id>
+  mockupify-writer-dry-run
+  mockupify-writer-inspect <correlation-id>
+  mockupify-writer-preview <correlation-id> <create_batch|upload_design|start_export>
+  mockupify-writer-reconcile <correlation-id> [recovery-attestation.json]
+  mockupify-writer-backup <new-backup-path>
   mockupify-prepare <preparation.json> <approved-mappings.json> <review.png> [--save]
   mockupify-plan <artwork-sku> <mapping.json>
     [--sheet-fixture <rows.json> | --header-row <number> --garment-header <name>]
@@ -84,6 +90,7 @@ async function main(): Promise<void> {
   const commandOptions = {
     ...shopifyCommands,
     ...mockupifyCommands,
+    ...mockupifyWriterCommands,
     ...bindingCommands,
     submit: { mode: { type: 'string' } },
     'submit-sheet': { mode: { type: 'string' } },
@@ -122,6 +129,12 @@ async function main(): Promise<void> {
   if (command === 'mockupify-prepare') {
     const { databasePath } = settings(process.env);
     const result = await previewMockupifyPreparation(positionals, values.save === true, databasePath);
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (Object.hasOwn(mockupifyWriterCommands, command)) {
+    const { databasePath } = settings(process.env);
+    const result = await runMockupifyWriterCommand(command, positionals, databasePath);
     console.log(JSON.stringify(result, null, 2));
     return;
   }

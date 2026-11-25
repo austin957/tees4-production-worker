@@ -3,6 +3,7 @@ import { integer, object, onlyKeys, requiredText } from './config.js';
 import { WorkerError } from './model.js';
 import { masterInput, parseArtworkSelection, productionArtworkFromRows } from './sheets.js';
 import type { ProductionArtwork } from './model.js';
+import type { SupervisedSourceRow } from './mockupify-writer-model.js';
 import type { MockupifySourceRow } from './mockupify-planning.js';
 import type { GoogleSheetsAdapter } from './sheets.js';
 
@@ -165,6 +166,22 @@ export async function readMasterInputMockupifyRows(
     return {
       sourceRow: rowNumber, garment: displayedText(cells[0]), colors: displayedText(cells[1]),
       productSku: displayedText(cells[3]), artworkSku: displayedText(cells[6]),
+    };
+  });
+}
+
+export async function readMasterInputSupervisedRows(
+  headerRow = 1, garmentHeader = 'Product', readValues = authenticatedReader(),
+): Promise<SupervisedSourceRow[]> {
+  const headers = Object.entries({ ...mappedHeaders, E: garmentHeader, I: 'Tees-4 Completed' }) as [string, string][];
+  const rows = await readSheetRows(masterInput, 'A', 'K', headerRow, headers, readValues);
+  return rows.map(({ rowNumber, cells }) => {
+    if (!Array.isArray(cells)) throw new WorkerError('INVALID_SHEET_ROW', 'Sheets returned a data row with invalid cells.');
+    return {
+      sourceRow: rowNumber, sheetArtworkName: displayedText(cells[0]), title: displayedText(cells[1]),
+      description: displayedText(cells[2]), vendor: displayedText(cells[3]), garment: displayedText(cells[4]),
+      rawColors: displayedText(cells[5]), tags: displayedText(cells[6]), productSku: displayedText(cells[7]),
+      completion: displayedText(cells[8]), artworkSku: displayedText(cells[10]),
     };
   });
 }

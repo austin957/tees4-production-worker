@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { backup, DatabaseSync } from 'node:sqlite';
 import { integer, object, onlyKeys } from './config.js';
 import type { GarmentCompletionTarget, SheetsCompletionAdapter } from './garment-completion.js';
 import type { MockupifyPreparationRecord } from './mockupify-preparation.js';
+import { mockupifyDigest } from './mockupify-writer-model.js';
+import type { MockupifyClaim, MockupifyJournal, SupervisedMockupifyPlan } from './mockupify-writer-model.js';
 import { parseExportEvidence } from './mockupify.js';
 import type { ExportJob, ExportPlan } from './mockupify.js';
 import { completionAction, isProduction, WorkerError } from './model.js';
@@ -46,6 +48,7 @@ export class Store {
       this.db.exec(`
         PRAGMA busy_timeout = 5000;
         PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = FULL;
         CREATE TABLE IF NOT EXISTS jobs (
           id TEXT PRIMARY KEY,
           identity TEXT UNIQUE NOT NULL,
@@ -74,6 +77,30 @@ export class Store {
         CREATE TABLE IF NOT EXISTS mockupify_export_reservations (
           product_sku TEXT PRIMARY KEY,
           export_id TEXT NOT NULL REFERENCES mockupify_exports(id)
+        );
+        CREATE TABLE IF NOT EXISTS mockupify_writer_journal (
+          correlation_id TEXT PRIMARY KEY,
+          product_sku TEXT UNIQUE NOT NULL,
+          batch_id INTEGER UNIQUE,
+          design_id INTEGER UNIQUE,
+          export_id INTEGER UNIQUE,
+          body TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mockupify_writer_events (
+          sequence INTEGER PRIMARY KEY,
+          correlation_id TEXT NOT NULL REFERENCES mockupify_writer_journal(correlation_id),
+          body TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS mockupify_writer_event_history
+          ON mockupify_writer_events(correlation_id, sequence);
+        CREATE TABLE IF NOT EXISTS mockupify_request_budget (
+          sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+          at INTEGER NOT NULL,
+          new_export INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mockupify_retry_after (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          until INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS master_input_fixtures (
           row_number INTEGER PRIMARY KEY,
@@ -180,6 +207,151 @@ export class Store {
       }
       return { reused: true };
     });
+  }
+
+  // Snapshot the entire database, including committed WAL contents and binding history.
+  async backupTo(path: string): Promise<void> {
+    const file = openSync(path, 'wx', 0o600);
+    try {
+      await backup(this.db, path);
+      fsyncSync(file);
+    } catch (error) {
+      unlinkSync(path);
+      throw error;
+    } finally {
+      closeSync(file);
+    }
+  }
+
+  hasVerifiedMockupifyDurability(): boolean {
+    // This Store has no externally verified durability or restoration admission in Phase 20.
+    return false;
+  }
+
+  getMockupifyJournal(id: string): MockupifyJournal {
+    const row = this.db.prepare('SELECT body FROM mockupify_writer_journal WHERE correlation_id = ?').get(id);
+    if (!row) throw new WorkerError('MOCKUPIFY_JOURNAL_NOT_FOUND', 'No supervised journal matches that correlation ID.');
+    return JSON.parse(row.body as string) as MockupifyJournal;
+  }
+
+  inspectMockupifyJournal(id: string) {
+    return {
+      journal: this.getMockupifyJournal(id),
+      history: this.db.prepare('SELECT body FROM mockupify_writer_events WHERE correlation_id = ? ORDER BY sequence')
+        .all(id).map(row => JSON.parse(row.body as string) as unknown),
+    };
+  }
+
+  registerMockupifyPlan(plan: SupervisedMockupifyPlan): MockupifyJournal {
+    return this.transaction(() => {
+      const { correlationId, productSku } = plan.correlation;
+      this.assertMockupifyBindingClear(plan);
+      const journal: MockupifyJournal = {
+        plan, revision: 0, batchId: null, designId: null, exportId: null, exportTerminal: false,
+        exportStatus: 'unobserved', observedProductGids: [], shopifyProductGid: null, claims: {},
+      };
+      const result = this.db.prepare(`
+        INSERT INTO mockupify_writer_journal (correlation_id, product_sku, body) VALUES (?, ?, ?)
+        ON CONFLICT(correlation_id) DO NOTHING
+      `).run(correlationId, productSku, JSON.stringify(journal));
+      if (result.changes === 1) return journal;
+      const existing = this.getMockupifyJournal(correlationId);
+      if (mockupifyDigest(existing.plan) !== mockupifyDigest(plan)) {
+        throw new WorkerError('MOCKUPIFY_JOURNAL_CONFLICT', 'A different supervised plan already owns this Product SKU.');
+      }
+      return existing;
+    });
+  }
+
+  private assertMockupifyBindingClear(plan: SupervisedMockupifyPlan): void {
+    const { spreadsheetId, sourceRow, productSku } = plan.correlation;
+    const existing = this.db.prepare(`
+      SELECT id FROM product_bindings WHERE spreadsheet_id = ? AND (row_number = ? OR product_sku = ?)
+        AND status IN ('proposed', 'approved')
+    `).get(spreadsheetId, sourceRow, productSku);
+    if (existing) throw new WorkerError('MOCKUPIFY_BINDING_CONFLICT', 'An active Shopify binding already uses this row or Product SKU.');
+  }
+
+  updateMockupifyJournal(journal: MockupifyJournal, event: unknown): MockupifyJournal {
+    return this.transaction(() => this.saveMockupifyJournal(journal, event));
+  }
+
+  private saveMockupifyJournal(journal: MockupifyJournal, event: unknown): MockupifyJournal {
+    const id = journal.plan.correlation.correlationId;
+    const next = { ...journal, revision: journal.revision + 1 };
+    const result = this.db.prepare(`
+      UPDATE mockupify_writer_journal SET batch_id = ?, design_id = ?, export_id = ?, body = ?
+      WHERE correlation_id = ? AND json_extract(body, '$.revision') = ?
+    `).run(next.batchId, next.designId, next.exportId, JSON.stringify(next), id, journal.revision);
+    if (result.changes !== 1) {
+      throw new WorkerError('MOCKUPIFY_JOURNAL_CHANGED', 'The supervised journal changed. Inspect or reconcile the existing claim.');
+    }
+    this.db.prepare('INSERT INTO mockupify_writer_events (correlation_id, body) VALUES (?, ?)')
+      .run(id, JSON.stringify(event));
+    return next;
+  }
+
+  claimMockupifyOperation(journal: MockupifyJournal, claim: MockupifyClaim, remoteActive: number[], check: () => void) {
+    return this.transaction(() => {
+      const operation = claim.request.operation;
+      const current = this.getMockupifyJournal(journal.plan.correlation.correlationId);
+      if (current.revision !== journal.revision || current.claims[operation]) {
+        throw new WorkerError('MOCKUPIFY_ALREADY_CLAIMED', 'An existing claim or journal change requires inspection before dispatch.');
+      }
+      this.assertMockupifyBindingClear(current.plan);
+      const newExport = operation === 'start_export';
+      if (newExport) {
+        const active = this.db.prepare(`
+          SELECT export_id FROM mockupify_writer_journal
+          WHERE json_type(body, '$.claims.start_export') IS NOT NULL
+            AND json_extract(body, '$.exportTerminal') = 0
+        `).all();
+        const seen = new Set(active.map(row => row.export_id));
+        if (active.length + new Set(remoteActive.filter(id => !seen.has(id))).size >= 2) {
+          throw new WorkerError('MOCKUPIFY_EXPORT_CAPACITY', 'Mockupify has no verified free export slot.');
+        }
+      }
+      check();
+      const budgetSequence = this.takeMockupifyRequest(claim.claimedAt, newExport);
+      const claimed = { ...claim, budgetSequence };
+      const next = { ...current, claims: { ...current.claims, [operation]: claimed } };
+      return this.saveMockupifyJournal(next, { event: 'claim', ...claimed });
+    });
+  }
+
+  abortUnsentMockupifyOperation(journal: MockupifyJournal, priorClaims: MockupifyJournal['claims'],
+    claim: MockupifyClaim, now: number): void {
+    this.transaction(() => {
+      const budgetSequence = journal.claims[claim.request.operation]?.budgetSequence;
+      if (budgetSequence === undefined) throw new WorkerError('MOCKUPIFY_JOURNAL_CHANGED', 'The dispatch claim is missing.');
+      this.db.prepare('DELETE FROM mockupify_request_budget WHERE sequence = ?').run(budgetSequence);
+      this.saveMockupifyJournal({ ...journal, claims: priorClaims },
+        { event: 'aborted_before_send', operation: claim.request.operation, at: now });
+    });
+  }
+
+  private takeMockupifyRequest(now: number, newExport: boolean): number {
+    const retryAfter = this.db.prepare('SELECT until FROM mockupify_retry_after WHERE id = 1').get()?.until as number | undefined;
+    if (retryAfter !== undefined && now < retryAfter) {
+      throw new WorkerError('MOCKUPIFY_RATE_LIMITED', 'The account is waiting for the Mockupify Retry-After interval.', true);
+    }
+    this.db.prepare('DELETE FROM mockupify_request_budget WHERE at <= ?').run(now - 3_600_000);
+    const budget = this.db.prepare('SELECT COUNT(*) AS requests, COALESCE(SUM(new_export), 0) AS exports FROM mockupify_request_budget').get();
+    if (Number(budget?.requests) >= 1200 || (newExport && Number(budget?.exports) >= 60)) {
+      throw new WorkerError('MOCKUPIFY_RATE_LIMITED', 'The supervised writer reached the hourly Mockupify request budget.', true);
+    }
+    return Number(this.db.prepare('INSERT INTO mockupify_request_budget (at, new_export) VALUES (?, ?)').run(now, Number(newExport)).lastInsertRowid);
+  }
+
+  reserveMockupifyRead(now: number): void {
+    this.transaction(() => this.takeMockupifyRequest(now, false));
+  }
+
+  deferMockupifyRequests(until: number): void {
+    this.db.prepare(`
+      INSERT INTO mockupify_retry_after (id, until) VALUES (1, ?)
+      ON CONFLICT(id) DO UPDATE SET until = max(until, excluded.until)
+    `).run(until);
   }
 
   listProductBindings() {

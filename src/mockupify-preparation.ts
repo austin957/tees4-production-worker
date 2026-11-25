@@ -119,6 +119,11 @@ export interface MockupifyPreparationRecord extends MockupifyExportBindingDraft 
   supplierColorCodes: string[];
 }
 
+export function mockupifyCorrelation(spreadsheetId: string, productSku: string) {
+  const correlationId = digest(JSON.stringify([spreadsheetId, productSku]));
+  return { correlationId, batchName: `tees4-${correlationId.slice(0, 32)}`, designReference: `tees4:${correlationId}` };
+}
+
 export function prepareMockupifyExport(
   approved: ReturnType<typeof parseApprovedMockupifyConfig>,
   input: ReturnType<typeof parseMockupifyPreparationInput>,
@@ -142,9 +147,7 @@ export function prepareMockupifyExport(
     colors.some((color, index) => color.name !== row.colors[index]?.requestedName || color.mockupifyColorId !== row.colors[index]?.colorId)) {
     throw new WorkerError('MOCKUPIFY_PREPARATION_BLOCKED', 'Verify every approved template, the exact proposed colors, and any active binding for this row.');
   }
-  const correlationId = digest(JSON.stringify([source.spreadsheetId, source.productSku]));
-  const batchName = `tees4-${correlationId.slice(0, 32)}`;
-  const designReference = `tees4:${correlationId}`;
+  const { correlationId, batchName, designReference } = mockupifyCorrelation(source.spreadsheetId, source.productSku);
   if (live.batches.some(batch => batch.name === batchName) || liveDesignReferences.includes(designReference)) {
     throw new WorkerError('MOCKUPIFY_RECONCILIATION_REQUIRED', 'The planned batch name or design reference already exists. Reconcile the existing record before proceeding.');
   }

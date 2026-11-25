@@ -1,5 +1,7 @@
 # Mockupify reads and export preparation
 
+The [Phase 20 supervised writer](mockupify-writer.md) implements the requests in simulation and documents recovery and the offline row 36 trace.
+
 ## Integration capabilities
 
 The owner-confirmed Mockupify workflow uploads one design at a time, adds it to a batch, selects product templates and colors, and exports the selected products to Shopify. The design and garment metadata come from **Master Input** in **Design Input Master**. The [existing column map](sku-processing.md) identifies those fields and both assigned SKUs.
