@@ -1,6 +1,6 @@
-# Phase 21A supervised pilot preflight
+# Row 36 supervised pilot preflight
 
-Row 36 remains blocked for live export pending Shopify publication read access and a verified safe interval for the existing Hextom rule. The artwork, metadata, storage and authorization prerequisites below also apply.
+Phase 21B cleared the Shopify publication read-access blocker. Phase 21C records the owner's Hextom task observations. Live Mockupify export dispatch remains disabled pending a verified Hextom-safe interval and the artwork, metadata, storage and authorization prerequisites below.
 
 ## Owner approval record
 
@@ -24,17 +24,33 @@ The November 25, 2026 Phase 21 instructions and Phase 21A clarification are the 
 - The Drive file referenced on row 36 was retrieved and decoded. The original is a 3300 × 2137 RGBA PNG, 1,542,125 bytes, above the worker's 1,500,000-byte upload limit. The reviewed compressed bytes and their SHA-256 remain outstanding. Keep the original and decoded pixel hashes with the private operational evidence.
 - The authenticated Mockupify template read confirmed both color IDs on template `10779`, each with a base price of `18.99` and sizes X-Small, Small, Medium, Large, X-Large, 2X-Large and 3X-Large. Those selections project 14 color/size combinations. The API exposes neither size price adjustments nor final option ordering.
 - The Shopify read-only client verified the shop GID. Mockupify's authenticated OpenAPI contract exposes no connected-shop read. Obtain independent evidence of the account's current Shopify destination. The export request has only `batch` and `colors` fields.
-- The owner confirmed that Mockupify creates an **Active** Shopify product with **zero sales-channel publications** and an existing Hextom automation later assigns channels. The pilot requires a direct Shopify read of the exact exported Product GID, with zero current or staged sales-channel publications. The product status and the Online Store timestamp alone cannot establish that. The live Shopify API rejected the current app's publication read because it lacks `read_publications`. The isolated export verification profile requires only `read_products` and `read_publications`, with the existing product-only profile retaining its original scope. No app permissions changed. [Shopify Product publication fields](https://shopify.dev/docs/api/admin-graphql/latest/objects/product#field-Product.fields.resourcePublicationsV2)
+- The owner confirmed that Mockupify creates an **Active** Shopify product with **zero sales-channel publications** and an existing Hextom automation later assigns channels. In Phase 21B, Shopify Admin GraphQL `2026-10` returned `gid://shopify/Shop/76973965603` and reported exactly `read_products` and `read_publications` for the export verification app. The worker's publication query returned valid data for a sample product. The pilot still requires a direct read of the exact exported Product GID showing zero current or staged sales-channel publications. [Shopify Product publication fields](https://shopify.dev/docs/api/admin-graphql/latest/objects/product#field-Product.fields.resourcePublicationsV2)
 - Mockupify documents that it joins the design title, template title and extra title. With the approved title as the design title, the documented composition yields `Bold Arrow Emblem Adult Tank Top`. A supported title configuration or separate approval for an exact composed title is needed. The final description and tags also combine template and design values. Review the template's actual description and tags, the exact upload fields, the vendor and its distinction from designer attribution, and all variant prices before authorization. Verify the resulting tags exclude `adjust`. [Mockupify OpenAPI](https://mockupify.io/api/schema/)
 - The task workspace and shared/download directories use the same local overlay. The environment exposes one executor and no configured persistent data volume or separate restore target. Codex starts new tasks from their prepared environment in separate workspaces. The existing SQLite backup and restore test checks the claim, request digest, correlation ID, product binding and both audit histories locally. Production admission remains disabled until a separate Codex task can open the latest journal from owner-controlled durable storage and verify those records. [Codex Cloud task isolation](https://help.openai.com/en/articles/20001545-using-codex-cloud)
 
 ## Hextom publication timing
 
-Hextom can make the product available when an eligible sales-channel assignment task runs while the product matches its configured filters. The previously observed 6:15 PM SKU transformation and 9:00 PM tag removal are separate actions. Their displayed timezone was unverified, and neither job establishes the channel-assignment schedule. The absence of `adjust` does not establish exclusion from the publication task.
+The owner inspected the active scheduled Hextom Bulk Product Edit task for **Channel Availability**. The schedule, run history and filter details below are owner-supplied observations. They have no independent API authentication.
 
-Before dispatch, review the actual channel-assignment task and its run history with read-only access. Record the exact action and channels, trigger or recurrence, timezone, product filters and dependencies, queued or running instances, and the earliest possible eligible run. If the test relies on row 36 being excluded, record why the configured filters exclude the exported product throughout the test. Record the verified start and end of a safe interval and the minimum time needed for export and observation. The test must finish before an eligible publication run. Hold if the rule, timing, eligibility, or complete test interval is unverified. Existing Hextom configuration remains in place. [Hextom scheduled tasks](https://bpe-help-center.hextom.com/article/732-tutorials-on-using-scheduled-tasks-bpe)
+| Evidence | Owner observation |
+| --- | --- |
+| Displayed schedule | Run daily at 7:00 PM (local time) |
+| November 24, 2026 run history | Started approximately 6:00 PM and edited 91 products |
+| November 23, 2026 run history | Started approximately 6:01 PM and edited 35 products |
 
-Read Shopify immediately after export, during the supervised test, and again before the verified interval ends. Hold if any current or staged channel publication is observed, publication evidence is unavailable, or the interval expires before completion. An earlier empty read only describes that observation. Confirm the product's disposition with the owner before any separately authorized cleanup.
+The task uses **ALL** of these conditions:
+
+- Product status is Active.
+- Product tag is `adjust`.
+- Product is not published to selected sales channels.
+
+The task publishes qualifying products to Online Store, Facebook & Instagram, Shop, Faire, Inbox, and Google & YouTube. Treat any Active product carrying `adjust` as potentially eligible. If the pilot relies on filter exclusion, verify that the exact exported product will stay excluded throughout the test. The previously observed 6:15 PM SKU transformation and 9:00 PM tag removal are separate tasks and provide no verified timing for channel assignment.
+
+The difference between the displayed schedule and the run history remains unresolved. Approximately **6:00 PM as shown in the run history** is the earliest observed start. The available evidence cannot place it in America/Chicago or establish an earliest future run. For dispatch planning, treat exposure as possible as soon as the exported product qualifies. A queued or running eligible task could publish it before the first Shopify read. There is no verified safe interval.
+
+Before any future dispatch, use read-only evidence to confirm the timezone used for both the task schedule and run history, explain the observed difference, and check for queued or running instances. Verify the earliest eligible run and record a safe interval with explicit start and end times and the minimum time needed for export and observation. The entire test must finish before any eligible publication run. Hold if timing, eligibility, or the full interval remains unverified. Keep the Hextom task enabled with its existing configuration. Separately, the daily protected window remains **4:20 PM inclusive to 9:10 PM exclusive America/Chicago**, with the configured export safety margin before cutoff. [Hextom scheduled tasks](https://bpe-help-center.hextom.com/article/732-tutorials-on-using-scheduled-tasks-bpe)
+
+Read the APP publication connection for the exact exported Shopify Product GID immediately after export, during the supervised test, and again before the verified interval ends. Include current and staged publications. Hold if any are observed, publication evidence is unavailable, or the interval expires before completion. An empty publication read describes only that moment. Confirm the product's disposition with the owner before any separately authorized cleanup.
 
 ## Operation previews
 
