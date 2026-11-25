@@ -1,0 +1,11 @@
+{
+  "observedBatch": { "id": 6100, "name": "Design Input" },
+  "mappings": [
+    { "garment": "Adult Shirt", "templateId": 10679, "templateTitle": "Tee", "templateType": "Unisex T-Shirt" },
+    { "garment": "Youth Shirt", "templateId": 10680, "templateTitle": "Youth Tee", "templateType": "T-Shirt" },
+    { "garment": "Adult Sweatshirt", "templateId": 10681, "templateTitle": "Hoodie", "templateType": "Unisex Hoodie" },
+    { "garment": "Youth Sweatshirt", "templateId": 10682, "templateTitle": "Youth Hoodie", "templateType": "Youth Hoodie" },
+    { "garment": "Adult Long Sleeve", "templateId": 10683, "templateTitle": "Long Sleeve Tee", "templateType": "Unisex Long Sleeve T-Shirt" },
+    { "garment": "Women's Shirt", "templateId": 10684, "templateTitle": "Women's Tee", "templateType": "Women's T-Shirt" }
+  ]
+}

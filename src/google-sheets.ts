@@ -3,6 +3,7 @@ import { integer, object, onlyKeys, requiredText } from './config.js';
 import { WorkerError } from './model.js';
 import { masterInput, parseArtworkSelection, productionArtworkFromRows } from './sheets.js';
 import type { ProductionArtwork } from './model.js';
+import type { MockupifySourceRow } from './mockupify-planning.js';
 import type { GoogleSheetsAdapter } from './sheets.js';
 
 export const sheetsReadOnlyScope = 'https://www.googleapis.com/auth/spreadsheets.readonly';
@@ -151,6 +152,21 @@ export interface MasterInputProductionRow extends MasterInputSkuRow {
 export async function readMasterInputProductionRows(headerRow: number, readValues = authenticatedReader()): Promise<MasterInputProductionRow[]> {
   const rows = await readMasterInputSkuCells(headerRow, readValues, true);
   return rows.map(({ row, completion }) => ({ ...row, completion: displayedText(completion) }));
+}
+
+export async function readMasterInputMockupifyRows(
+  headerRow: number, garmentHeader: string, readValues = authenticatedReader(),
+): Promise<MockupifySourceRow[]> {
+  const rows = await readSheetRows(masterInput, 'E', 'K', headerRow, [
+    ['E', garmentHeader], ['F', mappedHeaders.F], ['H', mappedHeaders.H], ['K', mappedHeaders.K],
+  ], readValues);
+  return rows.map(({ rowNumber, cells }) => {
+    if (!Array.isArray(cells)) throw new WorkerError('INVALID_SHEET_ROW', 'Sheets returned a data row with invalid cells.');
+    return {
+      sourceRow: rowNumber, garment: displayedText(cells[0]), colors: displayedText(cells[1]),
+      productSku: displayedText(cells[3]), artworkSku: displayedText(cells[6]),
+    };
+  });
 }
 
 export interface MasterInputMatchRow extends MasterInputSkuRow {

@@ -1,3 +1,9 @@
+import { statSync } from 'node:fs';
+import { integer, object, onlyKeys, readJson, requiredText } from './config.js';
+import { readMasterInputMockupifyRows } from './google-sheets.js';
+import { parseMockupifyPlanningConfig, planMockupifyArtwork } from './mockupify-planning.js';
+import type { MockupifySourceRow } from './mockupify-planning.js';
+import { Store } from './store.js';
 import { mockupifyReadOnly } from './mockupify-readonly.js';
 import { WorkerError } from './model.js';
 
@@ -8,9 +14,14 @@ export const mockupifyCommands = {
   'mockupify-products': {},
   'mockupify-exports': {},
   'mockupify-export': {},
+  'mockupify-plan': {
+    'sheet-fixture': { type: 'string' },
+    'header-row': { type: 'string' },
+    'garment-header': { type: 'string' },
+  },
 } as const;
 
-export async function runMockupifyCommand(command: keyof typeof mockupifyCommands, args: string[]) {
+export async function runMockupifyCommand(command: Exclude<keyof typeof mockupifyCommands, 'mockupify-plan'>, args: string[]) {
   const id = args[0];
   const takesId = command === 'mockupify-designs' || command === 'mockupify-export';
   if (args.length > (takesId ? 1 : 0) || (command === 'mockupify-export' && id === undefined)) {
@@ -30,5 +41,58 @@ export async function runMockupifyCommand(command: keyof typeof mockupifyCommand
     case 'mockupify-products': return client.listProducts();
     case 'mockupify-exports': return client.listExports();
     case 'mockupify-export': return client.getExport(Number(id));
+  }
+}
+
+function fixtureRows(path: string): MockupifySourceRow[] {
+  const value = readJson(path, 'Mockupify sheet fixture');
+  if (!Array.isArray(value)) throw new WorkerError('INVALID_INPUT', 'Supply an array of synthetic Master Input rows.');
+  return (value as unknown[]).map(entry => {
+    const row = object(entry, 'Mockupify fixture row');
+    onlyKeys(row, ['sourceRow', 'garment', 'colors', 'productSku', 'artworkSku'], 'Mockupify fixture row');
+    function cell(key: 'garment' | 'colors' | 'productSku' | 'artworkSku') {
+      const value = row[key];
+      if (value !== null && typeof value !== 'string') {
+        throw new WorkerError('INVALID_INPUT', 'Fixture cells must be strings or null.');
+      }
+      return value;
+    }
+    return {
+      sourceRow: integer(row.sourceRow, 'Physical Master Input row', 1, Number.MAX_SAFE_INTEGER),
+      garment: cell('garment'), colors: cell('colors'), productSku: cell('productSku'), artworkSku: cell('artworkSku'),
+    };
+  });
+}
+
+export async function previewMockupifyPlan(args: string[], values: Record<string, unknown>, databasePath: string) {
+  if (args.length !== 2) throw new WorkerError('CLI_USAGE', 'Supply the exact Artwork SKU and a Mockupify mapping file.');
+  const artworkSku = requiredText(args[0], 'Artwork SKU');
+  const config = parseMockupifyPlanningConfig(readJson(args[1]!, 'Mockupify planning configuration'));
+  const fixture = values['sheet-fixture'];
+  if (fixture !== undefined && (values['header-row'] !== undefined || values['garment-header'] !== undefined)) {
+    throw new WorkerError('CLI_USAGE', 'Header options apply to live Master Input reads.');
+  }
+  const client = mockupifyReadOnly();
+  const source = fixture === undefined ? 'live_master_input' : 'synthetic_fixture';
+  const sourceRows = fixture === undefined
+    ? await readMasterInputMockupifyRows(
+      integer(Number(values['header-row'] ?? 1), 'Header row', 1, 1_000_000),
+      requiredText(values['garment-header'] ?? 'Product', 'Master Input garment header'),
+    )
+    : fixtureRows(requiredText(fixture, 'Fixture path'));
+
+  const [catalog, batches, batchDesigns] = await Promise.all([
+    client.listProducts(), client.listBatches(), client.listDesigns(config.observedBatch.id),
+  ]);
+  const registryExists = statSync(databasePath, { throwIfNoEntry: false }) !== undefined;
+  const registry = registryExists ? 'local_registry' : 'database_absent';
+  const store = registryExists ? new Store(databasePath, { readOnly: true }) : null;
+  try {
+    const bindings = store?.listProductBindings() ?? [];
+    return { source, registry, ...planMockupifyArtwork({
+      artworkSku, sourceRows, config, catalog, batches, batchDesigns, bindings,
+    }) };
+  } finally {
+    store?.close();
   }
 }

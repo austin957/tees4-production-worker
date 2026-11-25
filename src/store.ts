@@ -34,8 +34,12 @@ function identity(artwork: Artwork, mode: Mode, workflow: Workflow): string {
 export class Store {
   private readonly db: DatabaseSync;
 
-  constructor(path: string) {
+  constructor(path: string, { readOnly = false }: { readOnly?: boolean } = {}) {
     try {
+      if (readOnly) {
+        this.db = new DatabaseSync(path, { readOnly: true, timeout: 5000 });
+        return;
+      }
       if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
       this.db = new DatabaseSync(path);
       this.db.exec(`

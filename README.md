@@ -64,7 +64,7 @@ The [garment completion guide](docs/garment-completion.md) shows how to simulate
 
 ## Phase 5 Mockupify export preparation
 
-The [Mockupify guide](docs/mockupify.md) covers the Phase 17 read-only API commands, template and color mapping, the simulated export queue, and Shopify ID reconciliation.
+The [Mockupify guide](docs/mockupify.md) covers read-only API commands, the Phase 18 live-catalog export preview, the simulated export queue, and Shopify ID reconciliation.
 
 ## Phase 6 Shopify read-only inspection
 
