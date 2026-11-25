@@ -86,7 +86,7 @@ function authenticatedReader(): ReadValues {
 
 async function readSheetRows(
   source: typeof masterInput, start: string, end: string, headerRow: number,
-  expectedHeaders: [string, string][], readValues: ReadValues,
+  expectedHeaders: [string, string | readonly string[]][], readValues: ReadValues,
 ) {
   const tab = `'${source.tab.replaceAll("'", "''")}'`;
   const range = `${tab}!${start}${headerRow}:${end}`;
@@ -101,8 +101,10 @@ async function readSheetRows(
   const headers = header as unknown[];
   for (const [column, expected] of expectedHeaders) {
     const index = columnIndex(column) - columnIndex(start);
-    if (headers[index] !== expected || headers.filter(cell => cell === expected).length !== 1) {
-      throw new WorkerError('SHEET_HEADER_MISMATCH', `Master Input column ${column} must contain the unique header "${expected}".`);
+    const allowed = typeof expected === 'string' ? [expected] : expected;
+    const matches = (value: unknown) => typeof value === 'string' && allowed.includes(value);
+    if (!matches(headers[index]) || headers.filter(matches).length !== 1) {
+      throw new WorkerError('SHEET_HEADER_MISMATCH', `Master Input column ${column} must contain a unique header matching ${allowed.map(label => `"${label}"`).join(' or ')}.`);
     }
   }
   return rows.map((cells, offset) => ({ rowNumber: headerRow + offset + 1, cells }));
@@ -173,7 +175,12 @@ export async function readMasterInputMockupifyRows(
 export async function readMasterInputSupervisedRows(
   headerRow = 1, garmentHeader = 'Product', readValues = authenticatedReader(),
 ): Promise<SupervisedSourceRow[]> {
-  const headers = Object.entries({ ...mappedHeaders, E: garmentHeader, I: 'Tees-4 Completed' }) as [string, string][];
+  const headers: [string, string | readonly string[]][] = Object.entries({
+    ...mappedHeaders,
+    A: ['Artwork Name(From Google Drive)', mappedHeaders.A],
+    E: garmentHeader,
+    I: 'Tees-4 Completed',
+  });
   const rows = await readSheetRows(masterInput, 'A', 'K', headerRow, headers, readValues);
   return rows.map(({ rowNumber, cells }) => {
     if (!Array.isArray(cells)) throw new WorkerError('INVALID_SHEET_ROW', 'Sheets returned a data row with invalid cells.');

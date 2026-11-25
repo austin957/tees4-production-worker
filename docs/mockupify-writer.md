@@ -1,5 +1,7 @@
 # Phase 20 supervised Mockupify writer
 
+See the [Phase 21 row 36 approval record and preflight](mockupify-pilot-row-36.md) for current pilot evidence.
+
 The existing export queue still uses its simulator. Phase 20 builds and validates the documented Mockupify POST requests through a separately injected fake HTTP transport. Simulation uses `mockupify.invalid` and a synthetic credential. The CLI exposes offline preview and local inspection, SQLite backup, and reconciliation using read-only vendor APIs. There is no CLI dispatch command. The shipped SQLite Store cannot admit production dispatch because it has no verified durability capability.
 
 ## Row 36 dry run

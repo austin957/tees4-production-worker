@@ -142,12 +142,15 @@ test('a process exit after applying the batch POST retains the committed claim o
   await restarted.backupTo(restored);
   await assert.rejects(restarted.backupTo(restored), { code: 'EEXIST' });
   const expectedHistory = restarted.inspectMockupifyJournal(id);
+  const expectedBindingHistory = restarted.inspectProductBinding(binding.id);
   restarted.close();
 
   const store = new Store(restored);
   t.after(() => store.close());
   assert.deepEqual(store.inspectMockupifyJournal(id), expectedHistory);
-  assert.equal(store.inspectProductBinding(binding.id).history[0]?.event, 'proposed');
+  assert.deepEqual(store.inspectProductBinding(binding.id), expectedBindingHistory);
+  assert.equal(store.getMockupifyJournal(id).claims.create_batch?.requestDigest, claim.requestDigest);
+  assert.equal(store.getMockupifyJournal(id).plan.correlation.correlationId, id);
   assert.equal(store.hasVerifiedMockupifyDurability(), false);
   api.batches.push(batch);
   const writer = api.writer(store);
@@ -280,7 +283,7 @@ test('a source discrepancy requires resolution and the read-only sheet adapter p
     assert.match(url.pathname, /A7%3AK/);
     assert.equal(url.searchParams.get('valueRenderOption'), 'FORMATTED_VALUE');
     return { values: [
-      ['Artwork Name', 'Product Title', 'Product Description', 'Vendor', 'Product', 'Colors', 'Tags', 'Product SKU',
+      ['Artwork Name(From Google Drive)', 'Product Title', 'Product Description', 'Vendor', 'Product', 'Colors', 'Tags', 'Product SKU',
         'Tees-4 Completed', '', 'Artwork SKU'],
       ['Artwork', 'Title', 'Description', 'Vendor', 'Adult Tank Top', '50, 00', 'tag', '0001-S105', '', '', '0001'],
     ] };
