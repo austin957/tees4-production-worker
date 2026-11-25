@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { integer, object, onlyKeys } from './config.js';
 import type { GarmentCompletionTarget, SheetsCompletionAdapter } from './garment-completion.js';
+import type { MockupifyPreparationRecord } from './mockupify-preparation.js';
 import { parseExportEvidence } from './mockupify.js';
 import type { ExportJob, ExportPlan } from './mockupify.js';
 import { completionAction, isProduction, WorkerError } from './model.js';
@@ -61,6 +62,14 @@ export class Store {
           identity TEXT UNIQUE NOT NULL,
           export_ref TEXT UNIQUE,
           body TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mockupify_export_preparations (
+          correlation_id TEXT PRIMARY KEY,
+          spreadsheet_id TEXT NOT NULL,
+          product_sku TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          body TEXT NOT NULL,
+          UNIQUE(spreadsheet_id, product_sku)
         );
         CREATE TABLE IF NOT EXISTS mockupify_export_reservations (
           product_sku TEXT PRIMARY KEY,
@@ -148,6 +157,29 @@ export class Store {
       this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  saveMockupifyPreparation(record: MockupifyPreparationRecord, now: number): { reused: boolean } {
+    return this.transaction(() => {
+      const binding = this.db.prepare(`
+        SELECT id FROM product_bindings WHERE spreadsheet_id = ? AND (row_number = ? OR product_sku = ?)
+          AND status IN ('proposed', 'approved')
+      `).get(record.spreadsheetId, record.sourceRow, record.productSku);
+      if (binding) throw new WorkerError('MOCKUPIFY_PREPARATION_CONFLICT', 'An active binding already uses this row or Product SKU.');
+      const body = JSON.stringify(record);
+      const result = this.db.prepare(`
+        INSERT INTO mockupify_export_preparations (correlation_id, spreadsheet_id, product_sku, created_at, body)
+        VALUES (?, ?, ?, ?, ?) ON CONFLICT(spreadsheet_id, product_sku) DO NOTHING
+      `).run(record.correlationId, record.spreadsheetId, record.productSku, now, body);
+      if (result.changes === 1) return { reused: false };
+      const existing = this.db.prepare(`
+        SELECT body FROM mockupify_export_preparations WHERE spreadsheet_id = ? AND product_sku = ?
+      `).get(record.spreadsheetId, record.productSku);
+      if (existing?.body !== body) {
+        throw new WorkerError('MOCKUPIFY_PREPARATION_CONFLICT', 'A different preparation is already recorded for this Product SKU.');
+      }
+      return { reused: true };
+    });
   }
 
   listProductBindings() {

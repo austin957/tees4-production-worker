@@ -4,7 +4,7 @@ import { simulatedAdapters } from './adapters.js';
 import { object, onlyKeys, parseMode, readJson, settings } from './config.js';
 import { googleSheets, parseSheetPolicy, previewSheetArtwork } from './google-sheets.js';
 import { runMockupifyExport } from './export-runner.js';
-import { mockupifyCommands, previewMockupifyPlan, runMockupifyCommand } from './mockupify-cli.js';
+import { mockupifyCommands, previewMockupifyPlan, previewMockupifyPreparation, runMockupifyCommand } from './mockupify-cli.js';
 import { planMockupifyExport, simulatedMockupifyExports } from './mockupify.js';
 import { asWorkerError, WorkerError } from './model.js';
 import { bindingCommands, runBindingCommand } from './product-binding-cli.js';
@@ -42,6 +42,7 @@ const help = `Tees-4 Production Worker
   mockupify-products
   mockupify-exports
   mockupify-export <export-id>
+  mockupify-prepare <preparation.json> <approved-mappings.json> <review.png> [--save]
   mockupify-plan <artwork-sku> <mapping.json>
     [--sheet-fixture <rows.json> | --header-row <number> --garment-header <name>]
   shopify-auth
@@ -118,8 +119,14 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
+  if (command === 'mockupify-prepare') {
+    const { databasePath } = settings(process.env);
+    const result = await previewMockupifyPreparation(positionals, values.save === true, databasePath);
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
   if (Object.hasOwn(mockupifyCommands, command)) {
-    const result = await runMockupifyCommand(command as Exclude<keyof typeof mockupifyCommands, 'mockupify-plan'>, positionals);
+    const result = await runMockupifyCommand(command as Exclude<keyof typeof mockupifyCommands, 'mockupify-plan' | 'mockupify-prepare'>, positionals);
     console.log(JSON.stringify(result, null, 2));
     return;
   }

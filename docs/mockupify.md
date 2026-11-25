@@ -49,6 +49,36 @@ The preview recommends one future isolated batch per Product SKU, containing exa
 
 A resolved preview row contains a binding draft with the Master Input spreadsheet ID, physical row, Product SKU, Artwork SKU, Mockupify template ID and exact color IDs. Mockupify batch, design and export IDs, Shopify shop GID and Shopify Product GID start as null. A future verified record must capture those identifiers from trusted evidence linked to the exact row. Reconcile an export detail by exact design ID, template ID and color IDs, verify the Shopify shop and Product GID independently, and then use the existing production binding review. Historical exports can return `batch: null` even though OpenAPI declares a batch object. Finished historical exports can also have empty product lists. These records cannot establish a binding or current design availability.
 
+## Prepare a supervised export
+
+The [versioned mapping approval](../config/mockupify-approved-v1.json) records the seven exact garment-to-template assignments explicitly approved in the Phase 19 owner-provided instructions on November 25, 2026. The file records that those instructions are the evidence source and that a separate owner authentication did not occur. Its SHA-256 fingerprint covers the sorted, parsed garment, template ID, title and type records. The expected fingerprint for this revision is pinned in the preparer. Supplier colors, artwork, batches, dispatch and Shopify bindings all require their own review. The label `Adult Long Sleeve` belongs to the earlier candidate file. The approved label is `Adult LongSleeve Shirt`.
+
+```sh
+npm run --silent worker -- mockupify-prepare evidence.json config/mockupify-approved-v1.json review.png
+```
+
+Supply a current read-only Master Input snapshot for one physical row. The `source` object contains `row`, `sheetArtworkName`, `title`, `artworkSku`, `productSku`, `garment`, `rawColors`, `completion` (null for a blank cell) and `evidence`. The `supplierColors` array contains one `brand`, `style`, `code`, `name`, `mockupifyColorId` and `evidence` record per source color in the same order. Preserve the exact strings, including leading zeros. The `png` object holds `originalRef`, `originalSha256` and `preparedSha256`. Inspect the original and the lossless copy outside the worker before supplying that evidence. The command checks that the local PNG signature, byte count and digest match the reviewed copy. The report still requires owner review of the PNG, its attribution and the exact colors. Re-read the physical row and check workbook-wide uniqueness of the exact Product SKU before separately authorized execution.
+
+The preparer reads the live catalog and checks all approved IDs, titles, types and availability. It verifies each candidate supplier code against the exact garment style and checks its proposed name and ID against the mapped template. It validates that each selected color ID is unique across the catalog. Existing proposed or approved Shopify bindings for the row or Product SKU block preparation. In the report, `requestPreview` describes the following shapes from the [Mockupify OpenAPI specification](https://mockupify.io/api/schema/).
+
+| Step | Documented request | Identity and evidence |
+| --- | --- | --- |
+| Create one isolated batch | `POST /api/batches/` with JSON `name` | Use the correlation-derived name and record the returned batch ID. |
+| Upload one design | `POST /api/designs/` with multipart `batch`, `title`, `design_id` and `file` | Use the verified new numeric batch ID, the recorded design reference and the reviewed PNG. Confirm designer attribution and final Shopify metadata before the upload. The observed Design Input batch is for reference. |
+| Start export | `POST /api/exports/` with JSON `batch` and `colors` | Require a fresh read showing exactly the intended design ID in the isolated batch, exclusive control while the export runs, and the exact ordered reviewed color IDs from one template. Color IDs select the template. |
+
+The generated JSON has `executionAuthorized: false` and leaves the batch and file placeholders unset. The prep command uses the existing GET-only client. The future write flow must recheck the live catalog, selected colors, current source row and registry immediately before dispatch. Apply the 4:20 PM inclusive to 9:10 PM exclusive America/Chicago restriction for exports and initial Shopify SKU writes and the configured export safety margin.
+
+### Correlation and recovery
+
+Add `--save` to persist the strictly local dry-run correlation in `mockupify_export_preparations`. Its unique identity is the Master Input spreadsheet and Product SKU. The saved draft includes the physical row, both SKUs, mapping and plan fingerprints, prepared PNG digest, supplier style and exact code strings, template ID, color IDs, planned batch name and design reference. Batch ID, design ID, export ID, Shopify shop GID and Shopify Product GID start as null. Identical drafts reuse the record. A different plan for a saved Product SKU or an active binding requires reconciliation. This registry is independent of product binding approval.
+
+A future supervised writer needs a durable operation journal before dispatch. Key each operation by correlation ID and operation, and atomically record its claim, exact request digest and expected prior state before sending it. Record request time, outcome, provider IDs and authoritative evidence. Persist an uncertain state after timeout, disconnect, unreadable response or a crash after claim. Treat that state as held. Automatically retry read-only lookups where safe.
+
+- **Batch create** — Look up the exact correlation-derived name and verify a unique ID and intended membership. A name match by itself is insufficient if identity or ownership is ambiguous.
+- **Design upload** — Reconcile the exact design reference and numeric batch ID and verify that the single design matches the reviewed artwork. Multiple results or unverified artwork keep the plan held.
+- **Export** — Poll the verified export ID when it exists. Otherwise look for authoritative batch, design, template and color evidence before claiming an export result. For a partial result, persist the verified IDs and hold the plan for reconciliation. A second batch-wide export could duplicate a product already created. Historical records with null batches and empty product lists, a missing match in a listing, or a title match cannot justify repeating an uncertain POST. Resume only after trusted evidence establishes the outcome and a separately authorized operator approves the next action.
+
 ## Plan and simulate an export
 
 The planner uses the existing sheet-backed artwork model. It records the Artwork SKU, artwork name and reference, configured batch ID, and one product assignment per physical sheet row. Each assignment preserves column B through H values relevant to export, including the title, description, vendor, tags, exact assigned Product SKU, garment selection, and selected colors.

@@ -110,6 +110,11 @@ function observeBatch(expected: MockupifyPlanningConfig['observedBatch'], batche
   return { id: expected.id, name: expected.name, status, designIds };
 }
 
+export function fingerprintMockupifyMappings(mappings: MockupifyPlanningConfig['mappings']): string {
+  const canonical = [...mappings].sort((a, b) => a.garment < b.garment ? -1 : a.garment > b.garment ? 1 : 0);
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+}
+
 export function planMockupifyArtwork(input: {
   artworkSku: string;
   sourceRows: readonly MockupifySourceRow[];
@@ -122,8 +127,7 @@ export function planMockupifyArtwork(input: {
   const { artworkSku, sourceRows, config, catalog, batches, batchDesigns, bindings } = input;
   const mappingValidation = validateMappings(config.mappings, catalog);
   const validationByGarment = new Map(mappingValidation.map(result => [result.mapping.garment, result]));
-  const canonicalMappings = [...config.mappings].sort((a, b) => a.garment < b.garment ? -1 : a.garment > b.garment ? 1 : 0);
-  const mappingFingerprint = createHash('sha256').update(JSON.stringify(canonicalMappings)).digest('hex');
+  const mappingFingerprint = fingerprintMockupifyMappings(config.mappings);
 
   const colorIds = new Map<number, number>();
   for (const template of catalog) {
