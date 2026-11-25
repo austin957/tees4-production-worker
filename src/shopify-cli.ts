@@ -10,7 +10,7 @@ import type { MatchSheet } from './shopify-matching.js';
 import { auditShopifyProduction } from './shopify-production-audit.js';
 import { parseSheetFixture, parseVerifiedSource, reconcileShopifySource } from './shopify-reconciliation.js';
 import type { ReconciliationRequest, SheetEvidence } from './shopify-reconciliation.js';
-import { identifyShop, shopifyGid, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from './shopify-readonly.js';
+import { identifyShop, shopifyExportReadConfig, shopifyGid, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from './shopify-readonly.js';
 import { previewShopifySkus } from './shopify-sku-preview.js';
 
 export const shopifyCommands = {
@@ -95,9 +95,9 @@ export async function runShopifyCommand(command: string, args: string[], values:
   const count = comparison ? fixture ? 3 : 4 : noArguments ? 0 : 1;
   if (command === 'shopify-adjust' ? args.length > 1 : args.length !== count) throw new WorkerError('CLI_USAGE', 'Wrong number of Shopify arguments. Run worker help for usage.');
   if (command === 'shopify-identify') return identifyShop(shopifyIdentifyConfig(process.env));
+  if (command === 'shopify-auth') return new ShopifyReadonlyClient(shopifyExportReadConfig(process.env)).verifyShop();
   const config = shopifyReadConfig(process.env);
   const client = new ShopifyReadonlyClient(config);
-  if (command === 'shopify-auth') return client.verifyShop();
   if (command === 'shopify-adjust') {
     return args[0] ? summarizeAdjustProduct(await client.product(args[0])) : discoverAdjustProducts(client);
   }

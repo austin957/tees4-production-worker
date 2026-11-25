@@ -7,7 +7,7 @@ The worker uses Shopify's GraphQL Admin API to inspect products by their authori
 1. Have the store owner create a dedicated app in the Shopify Dev Dashboard for a shop and app owned by the same Shopify organization. Configure and release an app version with **only `read_products`**, then install that version on the intended shop as an authorized administrator. This integration uses Shopify's client credentials grant for that ownership model. Confirm the arrangement with Shopify if the app and store belong to different organizations, since this grant is unsuitable for that case. [Shopify client credentials grant](https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens/client-credentials-grant)
 2. Obtain the shop's canonical `*.myshopify.com` domain. Use a trusted admin record or the identity bootstrap below to obtain the authoritative `gid://shopify/Shop/…`. Arrange narrowly scoped HTTPS access to that exact hostname. If the environment requires an HTTP proxy, configure the approved Node 24 proxy environment, including `NODE_USE_ENV_PROXY=1` where appropriate.
 3. Supply the dedicated app's client ID and secret through the approved environment secret mechanism. Use process environment variables exposed securely to the worker. Keep secret values out of commands, logs, shell history and the repository.
-4. Confirm the requested API version and schema with Shopify, then run `shopify-auth`. Check the returned GID, domain, API version, and scopes against the intended shop. The worker stops if Shopify returns a different API version or the app carries additional scopes. [Shopify API versioning](https://shopify.dev/docs/api/usage/versioning)
+4. Confirm the requested API version and schema with Shopify, then run `shopify-identify` for the product-only app. Check the returned GID, domain, API version, and scopes against the intended shop. The worker requires the requested API version and the exact scope set for each command. [Shopify API versioning](https://shopify.dev/docs/api/usage/versioning)
 5. For the first supervised comparison, provide one known Shopify product GID, its complete variant IDs and expected options, and the matching Master Input row and SKUs. Provide read-only Google Sheets access and an approved selection policy, or use a sanitized sheet fixture to isolate the Shopify verification. [Google Sheets authorization guide](google-sheets.md)
 
 | Environment variable | Purpose |
@@ -35,7 +35,6 @@ This command exercises the same OAuth grant and version checks and queries only 
 After `npm ci` and `npm run build`, run the following commands from the repository root. Replace the product example with the authoritative GID.
 
 ```sh
-npm run --silent worker -- shopify-auth
 npm run --silent worker -- shopify-products
 npm run --silent worker -- shopify-product gid://shopify/Product/2
 npm run --silent worker -- shopify-provenance gid://shopify/Product/2
@@ -44,7 +43,7 @@ npm run --silent worker -- shopify-variants gid://shopify/Product/2
 
 `shopify-products` lists up to five recent product GIDs and titles for inspection. It does not match products to sheet rows or create bindings. `shopify-provenance` reads the creation time, tags, and the first 25 metafield names visible to the app, without fetching metafield values. A tag or matching title is not independent evidence of the creating app or the source row. Product output includes the lifecycle status and the Online Store publication timestamp. Those fields do not establish publication to other sales channels. Variant SKU strings come from the product variant query and are preserved exactly. The query does not require extra inventory scopes. Shopify may change a product while pagination is in progress, so treat the output as an inspection of current data rather than a lock on the product. [Shopify Product query reference](https://shopify.dev/docs/api/admin-graphql/2026-10/queries/product)
 
-The supervised Mockupify export verifier checks the Shopify APP publication connection for the exact exported product. It checks for both current and staged publications. This read requires a separate read-only app profile with exactly `read_products` and `read_publications`. The regular Shopify CLI and binding snapshots retain their existing product-only profile. [Shopify Product publication fields](https://shopify.dev/docs/api/admin-graphql/latest/objects/product#field-Product.fields.resourcePublicationsV2)
+The supervised Mockupify export verifier checks the Shopify APP publication connection for current and staged publications on the exact exported product. It requires a read-only app with exactly `read_products` and `read_publications`. With that app's credentials and the verified Shop GID configured, run `npm run --silent worker -- shopify-auth` to verify its identity and scopes. Product inspection commands and binding snapshots require the product-only app profile. [Shopify Product publication fields](https://shopify.dev/docs/api/admin-graphql/latest/objects/product#field-Product.fields.resourcePublicationsV2)
 
 ## Audit the Hextom readiness queue
 

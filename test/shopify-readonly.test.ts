@@ -25,6 +25,7 @@ const identity = {
   shop: { id: config.shopId, myshopifyDomain: config.domain },
   currentAppInstallation: { accessScopes: [{ handle: 'read_products' }] },
 };
+const exportScopes = ['read_products', 'read_publications'];
 const grant = { access_token: 'fixture-token', expires_in: 86_400 };
 const variant = (n: number, sku: string | null = '000710', size = 'M', color = 'White') => ({
   id: `gid://shopify/ProductVariant/${n}`, sku,
@@ -223,23 +224,39 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
       if (url.pathname !== '/admin/api/2026-10/graphql.json' || !/^query Tees4Read/.test(payload.query)) {
         throw new Error('Unexpected Shopify operation');
       }
-      const data = payload.query.includes('Tees4ReadIdentity') ? ${JSON.stringify(identity)} :
+      const installation = { accessScopes: JSON.parse(process.env.FIXTURE_SHOPIFY_SCOPES).map(handle => ({ handle })) };
+      const data = payload.query.includes('Tees4ReadIdentity') ?
+        { shop: ${JSON.stringify(identity.shop)}, currentAppInstallation: installation } :
         payload.query.includes('Tees4ReadAdjustCandidates') ?
         { products: { nodes: [], pageInfo: { hasNextPage: false } } } :
         { product: ${JSON.stringify(fixture)} };
       return Response.json({ data }, { headers: { 'X-Shopify-API-Version': '2026-10' } });
     };`);
-  const cli = (shopId: string, ...args: string[]) => spawnSync(process.execPath, [
+  const cli = (shopId: string, args: string[], scopes = ['read_products']) => spawnSync(process.execPath, [
       '--disable-warning=ExperimentalWarning', '--import', pathToFileURL(preload).href, 'dist/src/cli.js', ...args,
     ], { encoding: 'utf8', env: {
       ...process.env, ...env, TEES4_SHOPIFY_SHOP_ID: shopId, TEES4_DATABASE: database,
+      FIXTURE_SHOPIFY_SCOPES: JSON.stringify(scopes),
     } });
   const run = (...args: string[]) => {
-    const result = cli(config.shopId, ...args);
+    const result = cli(config.shopId, args);
     assert.equal(result.status, 0, result.stderr);
     return JSON.parse(result.stdout);
   };
-  assert.equal(run('shopify-auth').id, config.shopId);
+  const auth = cli(config.shopId, ['shopify-auth'], exportScopes);
+  assert.equal(auth.status, 0, auth.stderr);
+  assert.deepEqual(JSON.parse(auth.stdout), {
+    id: config.shopId, domain: config.domain, apiVersion: config.version, scopes: exportScopes,
+  });
+  assert.doesNotMatch(auth.stdout, /fixture-secret|fixture-token/);
+  for (const scopes of [['read_products'], [...exportScopes, 'write_products'], [...exportScopes, 'read_inventory']]) {
+    const denied = cli(config.shopId, ['shopify-auth'], scopes);
+    assert.equal(denied.status, 1);
+    assert.match(denied.stderr, /SHOPIFY_PERMISSION/);
+  }
+  const productWithExtraScope = cli(config.shopId, ['shopify-product', id], exportScopes);
+  assert.equal(productWithExtraScope.status, 1);
+  assert.match(productWithExtraScope.stderr, /SHOPIFY_PERMISSION/);
   assert.equal(run('shopify-product', id).id, id);
   assert.equal(run('shopify-variants', id).variants.length, 2);
   assert.equal(run('shopify-adjust').count, 0);
@@ -269,14 +286,14 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
   const compare = ['examples/shopify-readonly-bindings.json', '2', 'examples/sheet-input.json', '--fixture'];
   assert.equal(run('shopify-compare', ...compare).status, 'sku_assignment_required');
   assert.equal(run('shopify-preview', ...compare).proposedAssignments.length, 1);
-  const bootstrap = cli('', 'shopify-identify');
+  const bootstrap = cli('', ['shopify-identify']);
   assert.equal(bootstrap.status, 0, bootstrap.stderr);
   assert.deepEqual(JSON.parse(bootstrap.stdout), {
     id: config.shopId, domain: config.domain, apiVersion: config.version, scopes: ['read_products'],
   });
   assert.doesNotMatch(bootstrap.stdout, /fixture-secret|fixture-token/);
   for (const args of [['shopify-auth'], ['shopify-product', id]]) {
-    const strict = cli('', ...args);
+    const strict = cli('', args);
     assert.equal(strict.status, 1);
     assert.match(strict.stderr, /INVALID_SHOPIFY_ID/);
   }
@@ -450,7 +467,7 @@ test('variant pagination rejects a product update between pages', async () => {
 const exportConfig = shopifyExportReadConfig(env);
 const exportIdentity = {
   ...identity,
-  currentAppInstallation: { accessScopes: [{ handle: 'read_products' }, { handle: 'read_publications' }] },
+  currentAppInstallation: { accessScopes: exportScopes.map(handle => ({ handle })) },
 };
 
 test('export reconciliation reads sales-channel evidence without changing existing binding snapshots', async () => {
