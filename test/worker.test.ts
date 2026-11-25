@@ -22,12 +22,11 @@ const morning = Date.parse('2026-07-11T15:00:00Z');
 function fixture(t: TestContext) {
   const path = mkdtempSync(join(tmpdir(), 'tees4-test-'));
   const database = join(path, 'jobs.sqlite');
-  const store = new Store(database);
-  t.after(() => {
-    store.close();
-    rmSync(path, { recursive: true, force: true });
-  });
-  return { path, database, store };
+  const cleanup = new DisposableStack();
+  t.after(() => cleanup.dispose());
+  cleanup.defer(() => rmSync(path, { recursive: true, force: true }));
+  const openStore = () => cleanup.adopt(new Store(database), store => store.close());
+  return { path, database, store: openStore(), openStore };
 }
 
 test('dry-run skips all write methods and still requires a gate', async t => {
@@ -96,9 +95,8 @@ test('CLI recovers a timeout after creating a product across separate invocation
 });
 
 test('expired stage leases are recovered and stale checkpoints are fenced', async t => {
-  const { store, database } = fixture(t);
-  const second = new Store(database);
-  t.after(() => second.close());
+  const { store, openStore } = fixture(t);
+  const second = openStore();
   let now = morning;
   const adapters = simulatedAdapters(store);
   const worker = new Worker(store, adapters, undefined, () => now, undefined, 1);

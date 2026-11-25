@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { WorkerError } from '../src/model.js';
 import { parseBindingAssignment, proposeProductBinding, reviewProductBinding } from '../src/product-bindings.js';
 import { masterInput } from '../src/sheets.js';
@@ -218,7 +219,7 @@ test('persists approval and append-only history across SQLite and CLI restarts',
 test('proposes through the CLI using read-only Shopify and preserves pending status after a simulated OIDC failure', t => {
   const directory = mkdtempSync(join(tmpdir(), 'tees4-binding-cli-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const preload = join(directory, 'mock.mjs');
+  const preload = join(directory, 'mock # fixture.mjs');
   const input = join(directory, 'assignment.json');
   const domain = 'fixture.myshopify.com';
   const product = {
@@ -246,7 +247,7 @@ test('proposes through the CLI using read-only Shopify and preserves pending sta
     };
   `);
   const cli = (...args: string[]) => spawnSync(process.execPath, [
-    '--disable-warning=ExperimentalWarning', '--import', preload, 'dist/src/cli.js', ...args,
+    '--disable-warning=ExperimentalWarning', '--import', pathToFileURL(preload).href, 'dist/src/cli.js', ...args,
   ], { env: {
     ...process.env, TEES4_DATABASE: join(directory, 'worker.sqlite'), TEES4_SHOPIFY_DOMAIN: domain,
     TEES4_SHOPIFY_SHOP_ID: assignment.shopId, TEES4_SHOPIFY_API_VERSION: '2026-10',

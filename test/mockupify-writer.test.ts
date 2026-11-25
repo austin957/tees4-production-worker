@@ -131,10 +131,12 @@ test('a process exit after applying the batch POST retains the committed claim o
       process.exit(23);
     };
     await api.writer(store).dispatch(id, 'create_batch', api.approve(store, id, 'create_batch'));
-  `, path, remote], { encoding: 'utf8' });
+  `, path, remote], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+  assert.ifError(child.error);
   assert.equal(child.status, 23, child.stderr);
   const { id, batch } = JSON.parse(readFileSync(remote, 'utf8')) as { id: string; batch: FakeMockupify['batches'][number] };
-  const restarted = new Store(path);
+  using original = new DisposableStack();
+  const restarted = original.adopt(new Store(path), store => store.close());
   const claim = restarted.getMockupifyJournal(id).claims.create_batch!;
   assert.equal(claim.state, 'dispatching');
 
@@ -142,21 +144,21 @@ test('a process exit after applying the batch POST retains the committed claim o
     spreadsheetId: restarted.getMockupifyJournal(id).plan.correlation.spreadsheetId,
     rowNumber: 15, productSku: 'OTHER', artworkSku: 'OTHER-ART', shopId: shop.id, productId: productGid,
   };
-  const api = new FakeMockupify();
   const binding = restarted.createProductBinding(assignment, 'Fixture operator', fakeProduct(), initialTime);
   await restarted.backupTo(restored);
   await assert.rejects(restarted.backupTo(restored), { code: 'EEXIST' });
   const expectedHistory = restarted.inspectMockupifyJournal(id);
   const expectedBindingHistory = restarted.inspectProductBinding(binding.id);
-  restarted.close();
+  original.dispose();
 
-  const store = new Store(restored);
-  t.after(() => store.close());
+  using restoration = new DisposableStack();
+  const store = restoration.adopt(new Store(restored), store => store.close());
   assert.deepEqual(store.inspectMockupifyJournal(id), expectedHistory);
   assert.deepEqual(store.inspectProductBinding(binding.id), expectedBindingHistory);
   assert.equal(store.getMockupifyJournal(id).claims.create_batch?.requestDigest, claim.requestDigest);
   assert.equal(store.getMockupifyJournal(id).plan.correlation.correlationId, id);
   assert.equal(store.hasVerifiedMockupifyDurability(), false);
+  const api = new FakeMockupify();
   api.batches.push(batch);
   const writer = api.writer(store);
   await assert.rejects(writer.dispatch(id, 'create_batch', claim.approval), { code: 'MOCKUPIFY_ALREADY_CLAIMED' });

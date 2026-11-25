@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { readJson } from '../src/config.js';
 import { readProductionArtwork, simulatedSheets } from '../src/sheets.js';
 import { discoverAdjustProducts, summarizeAdjustProduct } from '../src/shopify-adjust.js';
@@ -229,7 +230,7 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
       return Response.json({ data }, { headers: { 'X-Shopify-API-Version': '2026-10' } });
     };`);
   const cli = (shopId: string, ...args: string[]) => spawnSync(process.execPath, [
-      '--disable-warning=ExperimentalWarning', '--import', preload, 'dist/src/cli.js', ...args,
+      '--disable-warning=ExperimentalWarning', '--import', pathToFileURL(preload).href, 'dist/src/cli.js', ...args,
     ], { encoding: 'utf8', env: {
       ...process.env, ...env, TEES4_SHOPIFY_SHOP_ID: shopId, TEES4_DATABASE: database,
     } });
