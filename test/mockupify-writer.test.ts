@@ -7,16 +7,21 @@ import { test } from 'node:test';
 import { readMasterInputSupervisedRows } from '../src/google-sheets.js';
 import { row36MockupifyDryRun } from '../src/mockupify-writer-cli.js';
 import { previewMockupifyOperation } from '../src/mockupify-writer.js';
+import { WorkerError } from '../src/model.js';
 import { Store } from '../src/store.js';
 import { FakeMockupify, initialTime, input, png, prepare, productGid, readyToExport, review, shop } from './mockupify-writer-fixture.js';
 
-test('row 36 dry run preserves the discrepancy and provisional colors without claiming operations', () => {
+test('row 36 dry run preserves the source name, approved colors and publication expectations without claiming operations', () => {
   const trace = row36MockupifyDryRun();
   assert.equal(trace.source.sheetArtworkName, 'SKU TEST');
   assert.equal(trace.source.artworkRegistryName, 'Bold Arrow Emblem');
-  assert.equal(trace.source.artworkNameDiscrepancy, 'unresolved');
+  assert.equal(trace.source.artworkNameDiscrepancy, 'preserved_source_name');
   assert.equal(trace.template.templateId, 10779);
-  assert.deepEqual(trace.colors.map(color => [color.id, color.review]), [[20514, 'proposed'], [20515, 'proposed']]);
+  assert.deepEqual(trace.colors.map(color => [color.id, color.review]), [[20514, 'owner_approved'], [20515, 'owner_approved']]);
+  assert.deepEqual(trace.trace.at(-1), {
+    system: 'Shopify', status: 'awaiting_product_gid_and_shop_verification',
+    expectedProductStatus: 'ACTIVE', expectedSalesChannelPublications: 0,
+  });
   assert.equal(trace.executionAuthorized, false);
   assert.equal(trace.httpRequests, 0);
   assert.equal(trace.journalClaims, 0);
@@ -231,7 +236,7 @@ test('wrong batch members, wrong shop, changed source and restricted times block
   await reject('MOCKUPIFY_WINDOW');
 });
 
-test('Shopify GIDs stay held on wrong shop, non-draft products, empty export output and numeric-only evidence', async t => {
+test('Shopify GIDs stay held on wrong shop, non-Active products, empty export output and numeric-only evidence', async t => {
   const store = new Store(':memory:');
   t.after(() => store.close());
   const api = new FakeMockupify();
@@ -243,7 +248,7 @@ test('Shopify GIDs stay held on wrong shop, non-draft products, empty export out
   assert.equal((await writer.reconcile(id)).exportStatus, 'held');
   assert.deepEqual(api.shopifyReads, []);
   api.shop = { ...shop };
-  api.productOverride.status = 'ACTIVE';
+  api.productOverride.status = 'DRAFT';
   assert.equal((await writer.reconcile(id)).exportStatus, 'held');
   api.productOverride = {};
   api.exports[0]!.products[0]!.shopify_product_gid = null;
@@ -352,4 +357,60 @@ test('the supervised request journal enforces the hourly account quota with a ro
   for (let index = 0; index < 1200; index++) store.reserveMockupifyRead(initialTime);
   assert.throws(() => store.reserveMockupifyRead(initialTime + 3_599_999), { code: 'MOCKUPIFY_RATE_LIMITED' });
   store.reserveMockupifyRead(initialTime + 3_600_000);
+});
+
+test('the pilot blocks export without publication read access or enough verified time before Hextom can publish', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const writer = api.writer(store);
+  await assert.rejects(writer.prepare(input, { ...review, publicationSafety: { ...review.publicationSafety, evidence: '' } }, png),
+    { code: 'MOCKUPIFY_PUBLICATION_SAFETY_REQUIRED' });
+  const id = await readyToExport(store, api);
+  api.verifyPublicationAccess = async () => { throw new WorkerError('SHOPIFY_PERMISSION', 'Fixture publication access denied'); };
+  await assert.rejects(writer.dispatch(id, 'start_export', api.approve(store, id, 'start_export')),
+    { code: 'SHOPIFY_PERMISSION' });
+  api.verifyPublicationAccess = async () => {};
+  api.now = review.publicationSafety.endsAt - review.publicationSafety.minimumMinutes * 60_000;
+  await assert.rejects(writer.dispatch(id, 'start_export', api.approve(store, id, 'start_export')),
+    { code: 'MOCKUPIFY_PUBLICATION_WINDOW' });
+  assert.equal(store.getMockupifyJournal(id).claims.start_export, undefined);
+  assert.deepEqual(api.posts, ['/api/batches/', '/api/designs/']);
+});
+
+test('a live or staged sales-channel publication holds the pilot even with Active status and a null Online Store timestamp', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const id = await readyToExport(store, api);
+  const writer = api.writer(store);
+  await writer.dispatch(id, 'start_export', api.approve(store, id, 'start_export'));
+  api.finish();
+  api.productOverride.hasSalesChannelPublication = true;
+  const published = await writer.reconcile(id);
+  assert.equal(published.exportStatus, 'held');
+  assert.equal(published.shopifyProductGid, null);
+  assert.equal(published.publicationObserved, true);
+  api.productOverride.hasSalesChannelPublication = false;
+  assert.equal((await writer.reconcile(id)).exportStatus, 'held');
+});
+
+test('the pilot stays held on missing publication evidence or after the verified Hextom-safe window', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const id = await readyToExport(store, api);
+  const writer = api.writer(store);
+  await writer.dispatch(id, 'start_export', api.approve(store, id, 'start_export'));
+  api.finish();
+  api.includePublicationEvidence = false;
+  assert.equal((await writer.reconcile(id)).exportStatus, 'held');
+  api.includePublicationEvidence = true;
+  assert.equal((await writer.reconcile(id)).exportStatus, 'validated_for_binding_review');
+  api.now = review.publicationSafety.endsAt;
+  assert.equal((await writer.reconcile(id)).exportStatus, 'held');
+  const detail = api.exports[0]!;
+  detail.status = 'exporting';
+  detail.products = [];
+  assert.equal((await writer.reconcile(id)).exportStatus, 'held');
 });

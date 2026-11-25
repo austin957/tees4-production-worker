@@ -39,10 +39,15 @@ export interface MockupifyReview {
     vendor: string;
     tags: string[];
     variants: { options: Record<string, string>; price: string }[];
-    status: 'DRAFT';
+    status: 'ACTIVE';
   };
   exclusiveBatchControlEvidence: string;
-  draftAndTagSettingsEvidence: string;
+  publicationSafety: {
+    evidence: string;
+    startsAt: number;
+    endsAt: number;
+    minimumMinutes: number;
+  };
 }
 
 export interface SupervisedMockupifyPlan {
@@ -90,6 +95,7 @@ export interface MockupifyJournal {
   exportStatus: 'unobserved' | 'pending' | 'held' | 'validated_for_binding_review';
   observedProductGids: string[];
   shopifyProductGid: string | null;
+  publicationObserved?: boolean;
   claims: Partial<Record<MockupifyOperation, MockupifyClaim>>;
 }
 

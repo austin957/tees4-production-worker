@@ -8,7 +8,7 @@ import { readJson } from '../src/config.js';
 import { readProductionArtwork, simulatedSheets } from '../src/sheets.js';
 import { discoverAdjustProducts, summarizeAdjustProduct } from '../src/shopify-adjust.js';
 import { compareShopifyProduct, selectShopifyBinding, shopifyAssignment } from '../src/shopify-comparison.js';
-import { identifyShop, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from '../src/shopify-readonly.js';
+import { identifyShop, shopifyExportReadConfig, shopifyIdentifyConfig, shopifyReadConfig, ShopifyReadonlyClient } from '../src/shopify-readonly.js';
 import type { ProductRead } from '../src/shopify-readonly.js';
 import { previewShopifySkus } from '../src/shopify-sku-preview.js';
 
@@ -41,7 +41,7 @@ function response(body: unknown, status = 200, headers: Record<string, string> =
   return Response.json(body, { status, headers: { 'X-Shopify-API-Version': '2026-10', ...headers } });
 }
 
-function mocked(responses: (Response | Error)[], waits: number[] = []) {
+function mocked(responses: (Response | Error)[], waits: number[] = [], readConfig = config) {
   const calls: Request[] = [];
   const fetcher: typeof fetch = async (url, init) => {
     calls.push(new Request(url, init));
@@ -50,7 +50,7 @@ function mocked(responses: (Response | Error)[], waits: number[] = []) {
     if (result instanceof Error) throw result;
     return result;
   };
-  return { calls, client: new ShopifyReadonlyClient(config, fetcher, async delay => { waits.push(delay); }) };
+  return { calls, client: new ShopifyReadonlyClient(readConfig, fetcher, async delay => { waits.push(delay); }) };
 }
 
 test('uses the supported grant and only fixed read queries while retrieving all variant pages', async () => {
@@ -446,21 +446,51 @@ test('variant pagination rejects a product update between pages', async () => {
   await assert.rejects(client.product(id), { code: 'SHOPIFY_PRODUCT_CHANGED' });
 });
 
-test('export reconciliation requests description and prices while existing binding snapshots keep their original shape', async () => {
+const exportConfig = shopifyExportReadConfig(env);
+const exportIdentity = {
+  ...identity,
+  currentAppInstallation: { accessScopes: [{ handle: 'read_products' }, { handle: 'read_publications' }] },
+};
+
+test('export reconciliation reads sales-channel evidence without changing existing binding snapshots', async () => {
   const enriched = {
     ...product([{ ...variant(1), price: '5.00' }]),
     descriptionHtml: '<p>Fixture description</p>',
+    resourcePublicationsV2: { nodes: [], pageInfo: { hasNextPage: false } },
   };
   const { calls, client } = mocked([
-    response(grant), response({ data: identity }),
+    response(grant), response({ data: exportIdentity }),
     response({ data: { product: enriched } }), response({ data: { product: enriched } }),
-  ]);
+  ], [], exportConfig);
   const normal = await client.product(id);
   assert.equal(Object.hasOwn(normal, 'descriptionHtml'), false);
+  assert.equal(Object.hasOwn(normal, 'hasSalesChannelPublication'), false);
   assert.equal(Object.hasOwn(normal.variants[0]!, 'price'), false);
   const forExport = await client.productForExport(id);
   assert.equal(forExport.descriptionHtml, enriched.descriptionHtml);
+  assert.equal(forExport.hasSalesChannelPublication, false);
   assert.equal(forExport.variants[0]?.price, '5.00');
-  assert.doesNotMatch((await calls[2]!.json()).query, /descriptionHtml|\bprice\b/);
-  assert.match((await calls[3]!.json()).query, /^query Tees4ReadExportProduct/);
+  assert.doesNotMatch((await calls[2]!.json()).query, /descriptionHtml|\bprice\b|resourcePublicationsV2/);
+  assert.match((await calls[3]!.json()).query, /resourcePublicationsV2\(first: 1, catalogType: APP, onlyPublished: false\)/);
+});
+
+test('publication access requires the dedicated read-only scopes and complete evidence, including staged publications', async () => {
+  for (const scopes of [['read_products'], ['read_products', 'read_publications', 'write_products']]) {
+    const { client } = mocked([response(grant), response({ data: { ...identity,
+      currentAppInstallation: { accessScopes: scopes.map(handle => ({ handle })) },
+    } })], [], exportConfig);
+    await assert.rejects(client.verifyExportPublicationAccess(), { code: 'SHOPIFY_PERMISSION' });
+  }
+  const { client } = mocked([
+    response(grant), response({ data: exportIdentity }),
+    response({ data: { products: { nodes: [{ resourcePublicationsV2: { nodes: [], pageInfo: { hasNextPage: false } } }] } } }),
+    response({ data: { product: {
+      ...product([{ ...variant(1), price: '5.00' }]), descriptionHtml: '', publishedAt: null,
+      resourcePublicationsV2: { nodes: [{ isPublished: false }], pageInfo: { hasNextPage: false } },
+    } } }),
+    response({ data: { product: { ...product([{ ...variant(1), price: '5.00' }]), descriptionHtml: '' } } }),
+  ], [], exportConfig);
+  await client.verifyExportPublicationAccess();
+  assert.equal((await client.productForExport(id)).hasSalesChannelPublication, true);
+  await assert.rejects(client.productForExport(id), { code: 'SHOPIFY_RESPONSE' });
 });

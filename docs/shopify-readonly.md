@@ -44,6 +44,8 @@ npm run --silent worker -- shopify-variants gid://shopify/Product/2
 
 `shopify-products` lists up to five recent product GIDs and titles for inspection. It does not match products to sheet rows or create bindings. `shopify-provenance` reads the creation time, tags, and the first 25 metafield names visible to the app, without fetching metafield values. A tag or matching title is not independent evidence of the creating app or the source row. Product output includes the lifecycle status and the Online Store publication timestamp. Those fields do not establish publication to other sales channels. Variant SKU strings come from the product variant query and are preserved exactly. The query does not require extra inventory scopes. Shopify may change a product while pagination is in progress, so treat the output as an inspection of current data rather than a lock on the product. [Shopify Product query reference](https://shopify.dev/docs/api/admin-graphql/2026-10/queries/product)
 
+The supervised Mockupify export verifier checks the Shopify APP publication connection for the exact exported product. It checks for both current and staged publications. This read requires a separate read-only app profile with exactly `read_products` and `read_publications`. The regular Shopify CLI and binding snapshots retain their existing product-only profile. [Shopify Product publication fields](https://shopify.dev/docs/api/admin-graphql/latest/objects/product#field-Product.fields.resourcePublicationsV2)
+
 ## Audit the Hextom readiness queue
 
 ```sh

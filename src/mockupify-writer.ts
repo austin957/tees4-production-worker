@@ -24,12 +24,12 @@ const simulationEnv = { TEES4_MOCKUPIFY_API_KEY: 'mockupify-simulation' };
 const expectedEffects = {
   create_batch: 'Create one empty isolated Mockupify batch for this Product SKU.',
   upload_design: 'Upload one reviewed PNG and its exact design metadata into this isolated batch.',
-  start_export: 'Create one draft Shopify product with the approved variants in the approved shop. No publication or SKU assignment.',
+  start_export: 'Create one Active Shopify product with the approved variants and zero sales-channel publications in the approved shop. No SKU assignment.',
 } satisfies Record<MockupifyOperation, string>;
 type Reader = ReturnType<typeof mockupifyReadOnly>;
 type DesignEvidence = ReturnType<typeof parseDesignEvidence>;
 type ExportEvidence = ReturnType<typeof parseExportDetail>;
-type ShopifyReader = Pick<ShopifyReadonlyClient, 'verifyShop' | 'productForExport'>;
+type ShopifyReader = Pick<ShopifyReadonlyClient, 'verifyShop' | 'productForExport' | 'verifyExportPublicationAccess'>;
 export type MockupifyRecoveryEvidence = {
   operation: 'create_batch' | 'upload_design'; remoteId: number; requestDigest: string;
   by: string; evidence: string; dispatcherStoppedEvidence: string; artworkSha256?: string;
@@ -43,12 +43,28 @@ function nonblank(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function publicationSafety(plan: Pick<SupervisedMockupifyPlan, 'review'>) {
+  const safety = plan.review.publicationSafety;
+  if (!safety || !nonblank(safety.evidence) || !Number.isSafeInteger(safety.startsAt) ||
+    !Number.isSafeInteger(safety.endsAt) || !Number.isSafeInteger(safety.minimumMinutes) ||
+    safety.minimumMinutes < 1 || safety.endsAt - safety.startsAt <= safety.minimumMinutes * 60_000) return undefined;
+  return safety;
+}
+
+function withinPublicationWindow(plan: SupervisedMockupifyPlan, now: number) {
+  const safety = publicationSafety(plan);
+  return !!safety && now >= safety.startsAt && now < safety.endsAt;
+}
+
 function assertReview(source: SupervisedSourceRow, review: MockupifyReview) {
   const { design, product, shop } = review;
   if (!nonblank(review.artworkRegistryName) || !nonblank(review.designerAttribution) ||
     (source.sheetArtworkName !== review.artworkRegistryName && !nonblank(review.artworkNameResolution)) ||
-    !nonblank(review.exclusiveBatchControlEvidence) || !nonblank(review.draftAndTagSettingsEvidence)) {
+    !nonblank(review.exclusiveBatchControlEvidence)) {
     stop('MOCKUPIFY_REVIEW_REQUIRED', 'Record the reviewed artwork name, attribution, discrepancy resolution and exclusive batch control.');
+  }
+  if (!publicationSafety({ review })) {
+    stop('MOCKUPIFY_PUBLICATION_SAFETY_REQUIRED', 'Record verified Hextom publication rule evidence and a window covering the entire pilot.');
   }
   const designKeys = ['description', 'extra_price', 'extra_title', 'search_tags', 'title', 'vendor'];
   const validDesign = isDeepStrictEqual(Object.keys(design).sort(), designKeys) &&
@@ -58,13 +74,13 @@ function assertReview(source: SupervisedSourceRow, review: MockupifyReview) {
     !design.search_tags.split(',').some(tag => tag.trim() === 'adjust') && /^-?\d{1,8}(?:\.\d{1,2})?$/.test(design.extra_price);
   if (!validDesign || !nonblank(product.title) || !nonblank(product.vendor) || typeof product.descriptionHtml !== 'string' ||
     !product.descriptionHtml.includes(review.designerAttribution) ||
-    product.status !== 'DRAFT' || !Array.isArray(product.tags) || !product.tags.every(nonblank) ||
+    product.status !== 'ACTIVE' || !Array.isArray(product.tags) || !product.tags.every(nonblank) ||
     product.tags.includes('adjust') || new Set(product.tags).size !== product.tags.length ||
     !Array.isArray(product.variants) || product.variants.length === 0 ||
     product.variants.some(variant => !/^\d+(?:\.\d{1,2})?$/.test(variant.price) ||
       !Object.keys(variant.options).length || Object.entries(variant.options).some(([name, value]) => !nonblank(name) || !nonblank(value))) ||
     new Set(product.variants.map(variant => mockupifyDigest(variant.options))).size !== product.variants.length) {
-    stop('MOCKUPIFY_REVIEW_REQUIRED', 'Review all design fields, exact draft product metadata, prices, options and tags before dispatch.');
+    stop('MOCKUPIFY_REVIEW_REQUIRED', 'Review all design fields, exact Active product metadata, prices, options and tags before dispatch.');
   }
   shopifyGid(shop.id, 'Shop');
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.myshopify\.com$/.test(shop.domain) || !nonblank(shop.connectionEvidence)) {
@@ -132,7 +148,8 @@ function assertDesign(design: DesignEvidence, plan: SupervisedMockupifyPlan, bat
 }
 
 function checkProduct(product: ProductRead | null, gid: string, plan: SupervisedMockupifyPlan, createdAt: string): boolean {
-  if (!product || product.id !== gid || product.status !== plan.review.product.status || product.publishedAt !== null) return false;
+  if (!product || product.id !== gid || product.status !== 'ACTIVE' || product.status !== plan.review.product.status ||
+    product.publishedAt !== null || product.hasSalesChannelPublication !== false) return false;
   const expected = plan.review.product;
   const variants = product.variants.map(variant => {
     const entries = variant.selectedOptions.map(option => [option.name, option.value] as const);
@@ -293,8 +310,15 @@ export class SupervisedMockupifyWriter {
       stop('MOCKUPIFY_DURABLE_STORAGE_REQUIRED', 'Production requires verified durable journal and binding storage with tested restoration.');
     }
     if (plan.mode !== this.mode) stop('MOCKUPIFY_MODE_MISMATCH', 'The journal and dispatch mode must match.');
+    assertReview(plan.source, plan.review);
     const checkWindow = () => {
-      if (operation === 'start_export') assertExportWindow(this.clock(), this.options.exportMarginMinutes);
+      if (operation !== 'start_export') return;
+      const now = this.clock();
+      assertExportWindow(now, this.options.exportMarginMinutes);
+      const safety = publicationSafety(plan);
+      if (!safety || now < safety.startsAt || safety.endsAt - now <= safety.minimumMinutes * 60_000) {
+        stop('MOCKUPIFY_PUBLICATION_WINDOW', 'The verified Hextom-safe window cannot cover the planned export and test.');
+      }
     };
     checkWindow();
     const bytes = png && Buffer.from(png);
@@ -310,6 +334,7 @@ export class SupervisedMockupifyWriter {
       }
     } else {
       if (operation === 'start_export') {
+        await this.options.shopify.verifyExportPublicationAccess();
         const exports = await this.reads.listExports();
         if (exports.some(entry => entry.batch?.id === journal.batchId)) {
           stop('MOCKUPIFY_RECONCILIATION_REQUIRED', 'An export already exists for the isolated batch.');
@@ -490,15 +515,17 @@ export class SupervisedMockupifyWriter {
     const authoritative = related && subset;
     const terminal = detail.status === 'finished' || detail.status === 'failed';
     const gids = [...new Set([...journal.observedProductGids, ...this.observedGids(detail)])];
+    const observedAt = this.clock();
     const observed = this.options.store.updateMockupifyJournal({
       ...journal, exportId: authoritative ? exportId : journal.exportId,
       exportTerminal: journal.exportTerminal || (terminal && (authoritative || journal.exportId === exportId) &&
         detail.batch?.id === journal.batchId),
-      exportStatus: terminal || gids.length || detail.errors.length ||
+      exportStatus: !withinPublicationWindow(journal.plan, observedAt) || journal.publicationObserved ||
+        terminal || gids.length || detail.errors.length ||
         (detail.products.length > 0 && !authoritative) || detail.batch?.id !== journal.batchId ? 'held' : 'pending',
       shopifyProductGid: null, observedProductGids: gids,
       claims: { ...journal.claims, start_export: authoritative && journal.exportId === null ? { ...claim, state: 'recovered' } : claim },
-    }, { event: 'mockupify_export_read', at: this.clock(), detail });
+    }, { event: 'mockupify_export_read', at: observedAt, detail });
 
     // Numeric IDs are lookup candidates. They never substitute for a provider-returned Product GID.
     const lookups = [...new Set(detail.products.flatMap(row => row.shopifyProductGid ? [row.shopifyProductGid] :
@@ -506,29 +533,43 @@ export class SupervisedMockupifyWriter {
     if (!lookups.length) return observed;
     const verified: { gid: string; metadataMatches: boolean; snapshot: ProductRead | null; issue?: string }[] = [];
     let shop;
+    let publicationObserved = journal.publicationObserved ?? false;
     try {
       shop = await this.verifyShop(journal.plan);
       for (const gid of lookups) {
         try {
-          const shopify = await readStableShopifyProduct({ product: id => this.options.shopify.productForExport(id) }, gid);
+          const shopify = await readStableShopifyProduct({ product: async id => {
+            const snapshot = await this.options.shopify.productForExport(id);
+            publicationObserved ||= snapshot.hasSalesChannelPublication === true || snapshot.publishedAt !== null;
+            return snapshot;
+          } }, gid);
           verified.push({ gid, metadataMatches: checkProduct(shopify, gid, journal.plan, detail.created), snapshot: shopify });
         } catch (error) {
+          publicationObserved ||= error instanceof WorkerError && error.code === 'SHOPIFY_PUBLICATION_CHANGED';
           verified.push({ gid, metadataMatches: false, snapshot: null,
             issue: error instanceof WorkerError ? error.code : 'SHOPIFY_READ_FAILED' });
         }
       }
       await this.verifyShop(journal.plan);
     } catch (error) {
-      return this.options.store.updateMockupifyJournal(observed, { event: 'shopify_reconciliation_held', at: this.clock(),
-        issue: error instanceof WorkerError ? error.code : 'SHOPIFY_READ_FAILED' });
+      const event = { event: 'shopify_reconciliation_held', at: this.clock(),
+        issue: error instanceof WorkerError ? error.code : 'SHOPIFY_READ_FAILED', publicationObserved };
+      return publicationObserved ? this.options.store.holdMockupifyPublication(journal.plan.correlation.correlationId, event) :
+        this.options.store.updateMockupifyJournal(observed, event);
     }
     const gid = entry?.shopifyProductGid;
-    const ready = authoritative && detail.status === 'finished' && detail.errors.length === 0 &&
+    const now = this.clock();
+    const withinWindow = withinPublicationWindow(journal.plan, now);
+    const ready = withinWindow && !publicationObserved && authoritative && detail.status === 'finished' && detail.errors.length === 0 &&
       entry?.status === 'created' && sameColors(entry.colorIds, selected) && !!gid && gids.length === 1 &&
       verified.length === 1 && verified[0]!.gid === gid && verified[0]!.metadataMatches;
+    const event = { event: 'shopify_reconciliation', at: now, shop, verified, withinPublicationWindow: withinWindow, publicationObserved, ready };
+    if (publicationObserved) {
+      return this.options.store.holdMockupifyPublication(journal.plan.correlation.correlationId, event);
+    }
     return this.options.store.updateMockupifyJournal({
       ...observed, shopifyProductGid: ready ? gid : null,
       exportStatus: ready ? 'validated_for_binding_review' : 'held',
-    }, { event: 'shopify_reconciliation', at: this.clock(), shop, verified, ready });
+    }, event);
   }
 }

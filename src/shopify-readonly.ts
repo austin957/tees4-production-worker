@@ -19,6 +19,7 @@ interface ShopifyConnectionConfig {
 
 export interface ShopifyReadConfig extends ShopifyConnectionConfig {
   shopId: string;
+  exportPublicationReads?: true;
 }
 
 export function shopifyGid(value: unknown, kind: 'Shop' | 'Product' | 'ProductVariant'): string {
@@ -45,6 +46,10 @@ export function shopifyReadConfig(env: NodeJS.ProcessEnv): ShopifyReadConfig {
   return { ...shopifyIdentifyConfig(env), shopId: shopifyGid(env.TEES4_SHOPIFY_SHOP_ID, 'Shop') };
 }
 
+export function shopifyExportReadConfig(env: NodeJS.ProcessEnv): ShopifyReadConfig {
+  return { ...shopifyReadConfig(env), exportPublicationReads: true };
+}
+
 const shopQuery = `query Tees4ReadIdentity {
   shop { id myshopifyDomain }
   currentAppInstallation { accessScopes { handle } }
@@ -64,11 +69,24 @@ const adjustCandidatesQuery = `query Tees4ReadAdjustCandidates($first: Int!, $af
   }
 }`;
 
+// One APP publication, including a staged one, is enough to hold the export.
+const salesChannelPublications = `resourcePublicationsV2(first: 1, catalogType: APP, onlyPublished: false) {
+      nodes { isPublished }
+      pageInfo { hasNextPage }
+    }`;
+
+const checkPublicationReadQuery = `query Tees4CheckPublicationRead {
+  products(first: 1) {
+    nodes { ${salesChannelPublications} }
+  }
+}`;
+
 function productReadQuery(exportDetails: boolean) {
   const operation = exportDetails ? 'Tees4ReadExportProduct' : 'Tees4ReadProduct';
   return `query ${operation}($id: ID!, $first: Int!, $after: String) {
   product(id: $id) {
     id title ${exportDetails ? 'descriptionHtml ' : ''}handle status vendor productType publishedAt tags createdAt updatedAt
+    ${exportDetails ? salesChannelPublications : ''}
     options { id name position optionValues { name } }
     variants(first: $first, after: $after) {
       nodes { id sku ${exportDetails ? 'price ' : ''}selectedOptions { name value } }
@@ -76,7 +94,6 @@ function productReadQuery(exportDetails: boolean) {
     }
   }
 }`;
-
 }
 
 const provenanceQuery = `query Tees4ReadProvenance($id: ID!) {
@@ -94,6 +111,7 @@ const provenanceQuery = `query Tees4ReadProvenance($id: ID!) {
 const queries = {
   identity: shopQuery, products: productsQuery, adjustCandidates: adjustCandidatesQuery,
   product: productReadQuery(false), exportProduct: productReadQuery(true), provenance: provenanceQuery,
+  checkPublicationRead: checkPublicationReadQuery,
 };
 
 export interface ProductSummary { id: string; title: string }
@@ -107,6 +125,7 @@ export interface ProductVariantRead {
 }
 export interface ProductRead extends TaggedProduct {
   descriptionHtml?: string;
+  hasSalesChannelPublication?: boolean;
   handle: string;
   vendor: string;
   productType: string;
@@ -136,6 +155,15 @@ function nullableString(value: unknown): string | null {
   return value === null ? null : string(value);
 }
 
+function hasSalesChannelPublication(product: Record<string, unknown>): boolean {
+  const connection = record(product.resourcePublicationsV2);
+  const nodes = array(connection.nodes);
+  const { hasNextPage } = record(connection.pageInfo);
+  if (typeof hasNextPage !== 'boolean' || nodes.length > 1 || (hasNextPage && nodes.length === 0) ||
+    nodes.some(node => typeof record(node).isPublished !== 'boolean')) return invalidResponse();
+  return nodes.length > 0;
+}
+
 function retryAfter(header: string | null, now: number): number {
   if (header === null) return 0;
   if (/^\d+(?:\.\d+)?$/.test(header)) return Math.ceil(Number(header) * 1000);
@@ -158,7 +186,7 @@ class ShopifyReadTransport {
   private grant?: { value: string; expiresAt: number };
 
   constructor(
-    private readonly config: ShopifyConnectionConfig,
+    private readonly config: ShopifyConnectionConfig & { exportPublicationReads?: true },
     private readonly fetcher: typeof fetch = fetch,
     private readonly sleep: (milliseconds: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms)),
     private readonly clock: () => number = Date.now,
@@ -253,8 +281,9 @@ class ShopifyReadTransport {
     }
     if (data.currentAppInstallation === null) throw new WorkerError('SHOPIFY_PERMISSION', 'No Shopify app installation was returned.');
     const scopes = array(record(data.currentAppInstallation).accessScopes).map(scope => string(record(scope).handle));
-    if (!scopes.includes('read_products') || scopes.some(scope => scope !== 'read_products')) {
-      throw new WorkerError('SHOPIFY_PERMISSION', 'Use a dedicated Shopify app installation with only read_products.');
+    const allowedScopes = this.config.exportPublicationReads ? ['read_products', 'read_publications'] : ['read_products'];
+    if (allowedScopes.some(scope => !scopes.includes(scope)) || scopes.some(scope => !allowedScopes.includes(scope))) {
+      throw new WorkerError('SHOPIFY_PERMISSION', `Use a dedicated Shopify app installation with only ${allowedScopes.join(' and ')}.`);
     }
     const id = shopifyGid(shop.id, 'Shop');
     return { id, domain: this.config.domain, apiVersion: this.config.version, scopes };
@@ -390,6 +419,15 @@ export class ShopifyReadonlyClient {
     return this.readProduct(id, 'exportProduct');
   }
 
+  async verifyExportPublicationAccess(): Promise<void> {
+    const data = await this.verifiedQuery('checkPublicationRead', {});
+    const sample = array(record(data.products).nodes);
+    if (sample.length !== 1) {
+      throw new WorkerError('SHOPIFY_PUBLICATION_UNVERIFIED', 'A product is needed to verify Shopify sales-channel read access.');
+    }
+    hasSalesChannelPublication(record(sample[0]));
+  }
+
   private async readProduct(id: string, operation: 'product' | 'exportProduct'): Promise<ProductRead> {
     shopifyGid(id, 'Product');
     let result: ProductRead | undefined;
@@ -399,12 +437,16 @@ export class ShopifyReadonlyClient {
       const data = await this.verifiedQuery(operation, { id, first: pageSize, after });
       const product = this.productRecord(data, id);
       const updatedAt = string(product.updatedAt);
+      const publication = operation === 'exportProduct' ? hasSalesChannelPublication(product) : undefined;
+      if (result && result.hasSalesChannelPublication !== publication) {
+        throw new WorkerError('SHOPIFY_PUBLICATION_CHANGED', 'Shopify sales-channel publication changed during the product read.');
+      }
       if (result && result.updatedAt !== updatedAt) {
         throw new WorkerError('SHOPIFY_PRODUCT_CHANGED', 'Shopify updated the product during variant pagination. Read it again.');
       }
       result ??= {
         id, title: string(product.title),
-        ...(operation === 'exportProduct' ? { descriptionHtml: string(product.descriptionHtml) } : {}),
+        ...(publication === undefined ? {} : { descriptionHtml: string(product.descriptionHtml), hasSalesChannelPublication: publication }),
         handle: string(product.handle), vendor: string(product.vendor),
         productType: string(product.productType),
         status: string(product.status), publishedAt: nullableString(product.publishedAt), tags: array(product.tags).map(string),

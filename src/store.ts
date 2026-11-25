@@ -276,6 +276,15 @@ export class Store {
     return this.transaction(() => this.saveMockupifyJournal(journal, event));
   }
 
+  holdMockupifyPublication(id: string, event: unknown): MockupifyJournal {
+    return this.transaction(() => {
+      const journal = this.getMockupifyJournal(id);
+      return this.saveMockupifyJournal({
+        ...journal, publicationObserved: true, exportStatus: 'held', shopifyProductGid: null,
+      }, event);
+    });
+  }
+
   private saveMockupifyJournal(journal: MockupifyJournal, event: unknown): MockupifyJournal {
     const id = journal.plan.correlation.correlationId;
     const next = { ...journal, revision: journal.revision + 1 };

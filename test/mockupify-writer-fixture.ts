@@ -19,14 +19,17 @@ export const review: MockupifyReview = {
   shop: { ...shop, connectionEvidence: 'Fixture account settings' },
   product: {
     title: 'Fixture title Adult Tank Top Sample', descriptionHtml: '<p>Designed by Fixture Designer</p>',
-    vendor: 'Fixture vendor', tags: ['test', 'audit'], status: 'DRAFT',
+    vendor: 'Fixture vendor', tags: ['test', 'audit'], status: 'ACTIVE',
     variants: [
       { options: { Color: 'Black', Size: 'M' }, price: '5.00' },
       { options: { Color: 'White', Size: 'M' }, price: '6.00' },
     ],
   },
   exclusiveBatchControlEvidence: 'Fixture operator lock',
-  draftAndTagSettingsEvidence: 'Fixture verified draft output and exact template tags',
+  publicationSafety: {
+    evidence: 'Fixture verified Hextom exclusion through test end', startsAt: initialTime - 60_000,
+    endsAt: initialTime + 2 * 60 * 60_000, minimumMinutes: 15,
+  },
 };
 const source: SupervisedSourceRow = {
   sourceRow: 9, sheetArtworkName: 'Fixture artwork', title: 'Fixture title', artworkSku: '000123',
@@ -72,18 +75,21 @@ export class FakeMockupify {
   afterPost?: (path: string, data: unknown) => Promise<void>;
   beforeRead?: (path: string) => void;
   responseOverride?: (path: string) => Response | undefined;
-  productOverride: { status?: string; publishedAt?: string | null; vendor?: string } = {};
+  productOverride: { status?: string; publishedAt?: string | null; vendor?: string; hasSalesChannelPublication?: boolean } = {};
+  includePublicationEvidence = true;
+  verifyPublicationAccess: () => Promise<void> = async () => {};
 
   writer(store: Store, mode: 'simulate' | 'dry_run' | 'production' = 'simulate', exportMarginMinutes = 30) {
     return new SupervisedMockupifyWriter({
       store, env, shopify: {
         verifyShop: async () => ({ ...this.shop, scopes: ['read_products'], apiVersion: '2026-10' }),
+        verifyExportPublicationAccess: () => this.verifyPublicationAccess(),
         productForExport: async id => {
           this.shopifyReads.push(id);
           assert.equal(id, productGid);
           return {
             id, title: review.product.title, descriptionHtml: review.product.descriptionHtml, vendor: review.product.vendor,
-            status: 'DRAFT', tags: review.product.tags, handle: 'fixture', productType: '', publishedAt: null,
+            status: 'ACTIVE', ...(this.includePublicationEvidence ? { hasSalesChannelPublication: false } : {}), tags: review.product.tags, handle: 'fixture', productType: '', publishedAt: null,
             createdAt: new Date(this.now).toISOString(), updatedAt: new Date(this.now).toISOString(), options: [],
             variants: review.product.variants.map((variant, index) => ({
               id: `gid://shopify/ProductVariant/${index + 8}`, sku: null, price: variant.price,

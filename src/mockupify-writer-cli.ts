@@ -7,7 +7,7 @@ import { previewMockupifyOperation, SupervisedMockupifyWriter } from './mockupif
 import type { MockupifyRecoveryEvidence } from './mockupify-writer.js';
 import { WorkerError } from './model.js';
 import { masterInput } from './sheets.js';
-import { ShopifyReadonlyClient, shopifyReadConfig } from './shopify-readonly.js';
+import { ShopifyReadonlyClient, shopifyExportReadConfig } from './shopify-readonly.js';
 import { Store } from './store.js';
 
 export const mockupifyWriterCommands = {
@@ -32,12 +32,12 @@ export function row36MockupifyDryRun() {
     source: {
       spreadsheetId: masterInput.spreadsheetId, row: 36, artworkSku: '8419620257', productSku,
       sheetArtworkName: 'SKU TEST', productTitle: 'Bold Arrow Emblem', artworkRegistryName: 'Bold Arrow Emblem',
-      artworkNameDiscrepancy: 'unresolved',
+      artworkNameDiscrepancy: 'preserved_source_name',
     },
     template: { ...template, review: 'owner_approved_mapping_only' },
     colors: [
-      { name: 'Black', id: 20514, review: 'proposed' },
-      { name: 'White', id: 20515, review: 'proposed' },
+      { name: 'Black', id: 20514, review: 'owner_approved' },
+      { name: 'White', id: 20515, review: 'owner_approved' },
     ],
     correlation,
     trace: [
@@ -47,12 +47,14 @@ export function row36MockupifyDryRun() {
       { method: 'GET', path: '/api/designs/?batch={id}', status: 'awaiting_batch_and_design' },
       { method: 'POST', path: '/api/exports/', body: { batch: null, colors: [20514, 20515] }, status: 'blocked' },
       { method: 'GET', path: '/api/exports/{id}/', status: 'awaiting_export' },
-      { system: 'Shopify', status: 'awaiting_product_gid_and_shop_verification' },
+      { system: 'Shopify', status: 'awaiting_product_gid_and_shop_verification',
+        expectedProductStatus: 'ACTIVE', expectedSalesChannelPublications: 0 },
     ],
     blockers: [
-      'Resolve the exact artwork-name discrepancy with the owner and verify the current physical Master Input row and exact SKU uniqueness.',
-      'Review the PNG digest, designer attribution, exact design and expected draft Shopify product metadata, prices, variants and colors.',
-      'Verify the Mockupify account association with the exact Shopify shop and confirm draft-only output, tags and exclusive batch control.',
+      'Verify the reviewed compressed PNG, exact design fields and expected Shopify metadata, prices and variants.',
+      'Recheck the current physical Master Input row and SKU uniqueness with the worker credentials.',
+      'Verify the Mockupify connection to the exact Shopify shop and exclusive batch control.',
+      'Verify Shopify sales-channel read access and document the Hextom rule and safe interval for the entire test.',
       'Record separate operation-specific owner approvals and an export safety margin for a permitted time.',
       'Establish durable storage across environment replacement and test restoration and cutover for the journal and binding registry.',
     ],
@@ -99,7 +101,7 @@ export async function runMockupifyWriterCommand(command: string, args: string[],
           executionAuthorized: false };
       case 'mockupify-writer-reconcile': {
         const writer = new SupervisedMockupifyWriter({
-          store, env: process.env, shopify: new ShopifyReadonlyClient(shopifyReadConfig(process.env)),
+          store, env: process.env, shopify: new ShopifyReadonlyClient(shopifyExportReadConfig(process.env)),
         });
         return await writer.reconcile(id, argument ? recoveryEvidence(argument) : undefined);
       }
