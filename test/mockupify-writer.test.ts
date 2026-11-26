@@ -48,6 +48,53 @@ test('preparation rejects a stale selected row, then accepts the same identifier
   assert.equal(journal.plan.source.title, 'Fixture title');
 });
 
+test('preparation requires both reviewed vendors to match the exact, nonblank Column D value', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const writer = api.writer(store);
+  const vendor = 'Another Fixture Vendor';
+  const approved = structuredClone(review);
+  approved.design.vendor = approved.product.vendor = vendor;
+
+  for (const sourceVendor of [null, '   ', review.design.vendor]) {
+    api.rows[0]!.vendor = sourceVendor;
+    await assert.rejects(writer.prepare(input, approved, png), { code: 'MOCKUPIFY_VENDOR_MISMATCH' });
+  }
+  api.rows[0]!.vendor = vendor;
+  for (const field of ['design', 'product'] as const) {
+    for (const wrongVendor of [undefined, '', vendor.toLowerCase(), `${vendor} `]) {
+      const mismatched = structuredClone(approved);
+      if (wrongVendor === undefined) Reflect.deleteProperty(mismatched[field], 'vendor');
+      else mismatched[field].vendor = wrongVendor;
+      await assert.rejects(writer.prepare(input, mismatched, png), { code: 'MOCKUPIFY_VENDOR_MISMATCH' });
+    }
+  }
+  assert.deepEqual(api.requests, []);
+
+  const { plan } = await writer.prepare(input, approved, png);
+  assert.equal(plan.source.vendor, vendor);
+  assert.equal(plan.review.design.vendor, vendor);
+  assert.equal(plan.review.product.vendor, vendor);
+});
+
+test('dispatch rejects a previously stored review with incorrect vendors even with exact operation approval', async t => {
+  const store = new Store(':memory:');
+  const legacyStore = new Store(':memory:');
+  t.after(() => { store.close(); legacyStore.close(); });
+  const api = new FakeMockupify();
+  const { plan } = await api.writer(store).prepare(input, review, png);
+  plan.review.design.vendor = plan.review.product.vendor = 'Incorrect fixture vendor';
+  legacyStore.registerMockupifyPlan(plan);
+  const id = plan.correlation.correlationId;
+  const approval = api.approve(legacyStore, id, 'create_batch');
+  api.requests.length = 0;
+
+  await assert.rejects(api.writer(legacyStore).dispatch(id, 'create_batch', approval), { code: 'MOCKUPIFY_VENDOR_MISMATCH' });
+  assert.deepEqual(api.requests, []);
+  assert.deepEqual(legacyStore.getMockupifyJournal(id).claims, {});
+});
+
 test('dispatch rejects missing, ambiguous or mismatched Sheet identities before requests or claims', async t => {
   const store = new Store(':memory:');
   t.after(() => store.close());
@@ -60,6 +107,7 @@ test('dispatch rejects missing, ambiguous or mismatched Sheet identities before 
   for (const rows of [
     [], [{ ...source, sourceRow: 36 }], [{ ...source, productSku: 'different' }],
     [{ ...source, artworkSku: 'different' }], [{ ...source, garment: 'Adult Shirt' }],
+    [{ ...source, vendor: null }], [{ ...source, vendor: 'Changed fixture vendor' }],
     [source, { ...source, sourceRow: 36 }], [source, { ...source, productSku: 'different' }],
   ]) {
     api.rows = rows;
@@ -74,9 +122,13 @@ test('dispatch rechecks the Sheet after vendor preflight before claiming the ope
   t.after(() => store.close());
   const api = new FakeMockupify();
   const id = await prepare(store, api);
-  api.beforeRead = () => { api.rows[0]!.sourceRow = 36; };
-  await assert.rejects(api.writer(store).dispatch(id, 'create_batch', api.approve(store, id, 'create_batch')),
-    { code: 'MOCKUPIFY_SOURCE_CHANGED' });
+  const source = api.rows[0]!;
+  for (const changed of [{ ...source, sourceRow: 36 }, { ...source, vendor: 'Changed fixture vendor' }]) {
+    api.rows = [source];
+    api.beforeRead = () => { api.rows = [changed]; };
+    await assert.rejects(api.writer(store).dispatch(id, 'create_batch', api.approve(store, id, 'create_batch')),
+      { code: 'MOCKUPIFY_SOURCE_CHANGED' });
+  }
   assert.deepEqual(api.posts, []);
   assert.deepEqual(store.getMockupifyJournal(id).claims, {});
 });
@@ -303,7 +355,7 @@ test('wrong batch members, wrong shop, changed source and restricted times block
   await reject('MOCKUPIFY_WINDOW');
 });
 
-test('Shopify GIDs stay held on wrong shop, non-Active products, empty export output and numeric-only evidence', async t => {
+test('Shopify GIDs stay held on wrong shop or vendor, non-Active products, empty output and numeric-only evidence', async t => {
   const store = new Store(':memory:');
   t.after(() => store.close());
   const api = new FakeMockupify();
@@ -316,6 +368,8 @@ test('Shopify GIDs stay held on wrong shop, non-Active products, empty export ou
   assert.deepEqual(api.shopifyReads, []);
   api.shop = { ...shop };
   api.productOverride.status = 'DRAFT';
+  assert.equal((await writer.reconcile(id)).exportStatus, 'held');
+  api.productOverride = { vendor: 'Incorrect fixture vendor' };
   assert.equal((await writer.reconcile(id)).exportStatus, 'held');
   api.productOverride = {};
   api.exports[0]!.products[0]!.shopify_product_gid = null;

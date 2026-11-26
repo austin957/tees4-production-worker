@@ -60,6 +60,9 @@ function withinPublicationWindow(plan: SupervisedMockupifyPlan, now: number) {
 
 function assertReview(source: SupervisedSourceRow, review: MockupifyReview) {
   const { design, product, shop } = review;
+  if (!nonblank(source.vendor) || design.vendor !== source.vendor || product.vendor !== source.vendor) {
+    stop('MOCKUPIFY_VENDOR_MISMATCH', 'The design vendor and expected Shopify vendor must exactly match the nonblank Master Input Column D vendor.');
+  }
   if (!nonblank(review.artworkRegistryName) || !nonblank(review.designerAttribution) ||
     (source.sheetArtworkName !== review.artworkRegistryName && !nonblank(review.artworkNameResolution)) ||
     !nonblank(review.exclusiveBatchControlEvidence)) {
@@ -72,9 +75,9 @@ function assertReview(source: SupervisedSourceRow, review: MockupifyReview) {
   const validDesign = isDeepStrictEqual(Object.keys(design).sort(), designKeys) &&
     Object.values(design).every(value => typeof value === 'string' && value.isWellFormed() &&
       value.length <= 255 && !value.includes('\u0000')) &&
-    nonblank(design.title) && nonblank(design.vendor) && design.description.includes(review.designerAttribution) &&
+    nonblank(design.title) && design.description.includes(review.designerAttribution) &&
     !design.search_tags.split(',').some(tag => tag.trim() === 'adjust') && /^-?\d{1,8}(?:\.\d{1,2})?$/.test(design.extra_price);
-  if (!validDesign || !nonblank(product.title) || !nonblank(product.vendor) || typeof product.descriptionHtml !== 'string' ||
+  if (!validDesign || !nonblank(product.title) || typeof product.descriptionHtml !== 'string' ||
     !product.descriptionHtml.includes(review.designerAttribution) ||
     product.status !== 'ACTIVE' || !Array.isArray(product.tags) || !product.tags.every(nonblank) ||
     product.tags.includes('adjust') || new Set(product.tags).size !== product.tags.length ||
