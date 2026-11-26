@@ -27,7 +27,7 @@ const design = { id: 90, title: 'Other design', batchId: 100, batchName: batch.n
 
 function preview(rows: MockupifySourceRow[], overrides: Partial<Parameters<typeof planMockupifyArtwork>[0]> = {}) {
   return planMockupifyArtwork({
-    artworkSku: '00042', sourceRows: rows, config, catalog: [tee, hoodie],
+    artworkSku: '00042', sourceRows: rows, config, approvedMappings: config.mappings, catalog: [tee, hoodie],
     batches: [batch], batchDesigns: [], bindings: [], ...overrides,
   });
 }
@@ -128,6 +128,18 @@ test('owner review fingerprints are stable across mapping order and change when 
   assert.throws(() => parseMockupifyPlanningConfig({
     ...configInput, approval: { status: 'approved' },
   }), { code: 'INVALID_INPUT' });
+});
+
+test('planning blocks a non-library lookalike submitted under an approved garment', () => {
+  const lookalike = { ...tee, id: 99 };
+  const result = preview([shirtRow], {
+    config: { ...config, mappings: [{ ...config.mappings[0]!, templateId: lookalike.id }] },
+    catalog: [tee, lookalike],
+  });
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.mappingValidation[0]?.status, 'UNAPPROVED_TEMPLATE_MAPPING');
+  assert.equal(result.rows[0]?.template, null);
+  assert.equal(result.rows[0]?.bindingDraft, null);
 });
 
 test('an observed batch with unrelated designs cannot be reused or receive a combined color selection', () => {

@@ -84,13 +84,19 @@ export function parseMockupifyPlanningConfig(input: unknown): MockupifyPlanningC
   };
 }
 
-function validateMappings(mappings: CandidateMapping[], catalog: Catalog) {
+function validateMappings(mappings: CandidateMapping[], approvedMappings: readonly CandidateMapping[], catalog: Catalog) {
+  const approvedByGarment = new Map(approvedMappings.map(mapping => [mapping.garment, mapping]));
   return mappings.map(mapping => {
+    const approved = approvedByGarment.get(mapping.garment);
+    if (!approved || approved.templateId !== mapping.templateId || approved.templateTitle !== mapping.templateTitle ||
+      approved.templateType !== mapping.templateType) {
+      return { mapping, status: 'UNAPPROVED_TEMPLATE_MAPPING' as const };
+    }
     const matches = catalog.filter(template => template.id === mapping.templateId);
     const template = matches[0];
     if (matches.length > 1) return { mapping, status: 'AMBIGUOUS_TEMPLATE_ID' as const };
     if (!template) return { mapping, status: 'TEMPLATE_NOT_FOUND' as const };
-    if (template.library || template.title !== mapping.templateTitle || template.type !== mapping.templateType) {
+    if (template.library !== false || template.title !== mapping.templateTitle || template.type !== mapping.templateType) {
       return { mapping, status: 'TEMPLATE_MISMATCH' as const,
         observed: { title: template.title, type: template.type, library: template.library } };
     }
@@ -119,13 +125,14 @@ export function planMockupifyArtwork(input: {
   artworkSku: string;
   sourceRows: readonly MockupifySourceRow[];
   config: MockupifyPlanningConfig;
+  approvedMappings: readonly CandidateMapping[];
   catalog: Catalog;
   batches: Batch[];
   batchDesigns: Design[];
   bindings: readonly RegistryBinding[];
 }) {
-  const { artworkSku, sourceRows, config, catalog, batches, batchDesigns, bindings } = input;
-  const mappingValidation = validateMappings(config.mappings, catalog);
+  const { artworkSku, sourceRows, config, approvedMappings, catalog, batches, batchDesigns, bindings } = input;
+  const mappingValidation = validateMappings(config.mappings, approvedMappings, catalog);
   const validationByGarment = new Map(mappingValidation.map(result => [result.mapping.garment, result]));
   const mappingFingerprint = fingerprintMockupifyMappings(config.mappings);
 

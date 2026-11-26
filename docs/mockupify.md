@@ -32,12 +32,12 @@ The client preserves explicit Shopify Product GIDs and represents missing Shopif
 Use `mockupify-plan` with the exact Artwork SKU. The command reads the Master Input tab through read-only Google Application Default Credentials. Column E defaults to the observed `Product` header. Use `--header-row` and `--garment-header` for a verified alternate layout. A synthetic fixture can supply rows when ADC is unavailable, while template and batch checks still use the live Mockupify API.
 
 ```sh
-npm run --silent worker -- mockupify-plan ARTWORK_SKU examples/mockupify-template-candidates.json
+npm run --silent worker -- mockupify-plan ARTWORK_SKU config/mockupify-approved-v1.json
 npm run --silent worker -- mockupify-plan 00042 examples/mockupify-template-candidates.json \
   --sheet-fixture examples/mockupify-plan-rows.json
 ```
 
-Keep explicit mappings in a JSON configuration file. The candidate file pairs exact garment labels with the expected account template ID, title and type. The preview checks all configured candidates against the live catalog and requires owner review of the mapping fingerprint before any future dispatch. A catalog match establishes that the template exists with the configured identity. The owner must confirm that it represents the intended production garment. Keep any additional garment labels as explicit mappings for review.
+The preview resolves only exact garment, template ID, title and type assignments in the versioned owner-approved mapping. A candidate file can select a subset of those assignments. Each selected template must appear exactly once in the live catalog with `library: false`. A library product, unknown status, missing template, or unapproved assignment blocks selection. The worker never substitutes another product. The supervised writer rechecks the approved assignment, catalog flag and exact reviewed color IDs before claiming an operation. Existing product mockups, placements, colors and sizes are used as configured in Mockupify.
 
 The preview preserves the physical row, Artwork SKU, Product SKU, original color cell and order of the requested colors. It interprets column F as comma-delimited names with whitespace around separators. Each name must match the catalog exactly within the mapped template. Blanks, unknown names, duplicate requests, ambiguous names and reused color IDs require review. Numeric sheet color codes need an owner-verified interpretation before they can resolve to catalog names. Use exact displayed SKU strings, including leading zeros. A Product SKU repeated elsewhere in the input blocks the row. The command uses the existing local SQLite registry in read-only mode to flag proposed or approved bindings for the same physical row or Product SKU. If the database path is absent, the preview reports the missing registry.
 

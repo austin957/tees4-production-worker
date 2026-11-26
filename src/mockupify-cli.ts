@@ -2,7 +2,9 @@ import { readFileSync, statSync } from 'node:fs';
 import { integer, object, onlyKeys, readJson, requiredText } from './config.js';
 import { readMasterInputMockupifyRows } from './google-sheets.js';
 import { parseMockupifyPlanningConfig, planMockupifyArtwork } from './mockupify-planning.js';
-import { parseApprovedMockupifyConfig, parseMockupifyPreparationInput, prepareMockupifyExport } from './mockupify-preparation.js';
+import {
+  parseApprovedMockupifyConfig, parseMockupifyPreparationInput, prepareMockupifyExport, readApprovedMockupifyConfig,
+} from './mockupify-preparation.js';
 import type { MockupifySourceRow } from './mockupify-planning.js';
 import { Store } from './store.js';
 import { mockupifyReadOnly } from './mockupify-readonly.js';
@@ -69,7 +71,11 @@ function fixtureRows(path: string): MockupifySourceRow[] {
 export async function previewMockupifyPlan(args: string[], values: Record<string, unknown>, databasePath: string) {
   if (args.length !== 2) throw new WorkerError('CLI_USAGE', 'Supply the exact Artwork SKU and a Mockupify mapping file.');
   const artworkSku = requiredText(args[0], 'Artwork SKU');
-  const config = parseMockupifyPlanningConfig(readJson(args[1]!, 'Mockupify planning configuration'));
+  const mapping = object(readJson(args[1]!, 'Mockupify planning configuration'), 'Mockupify planning configuration');
+  const config = Object.hasOwn(mapping, 'approval')
+    ? parseApprovedMockupifyConfig(mapping).config
+    : parseMockupifyPlanningConfig(mapping);
+  const approvedMappings = readApprovedMockupifyConfig().config.mappings;
   const fixture = values['sheet-fixture'];
   if (fixture !== undefined && (values['header-row'] !== undefined || values['garment-header'] !== undefined)) {
     throw new WorkerError('CLI_USAGE', 'Header options apply to live Master Input reads.');
@@ -92,7 +98,7 @@ export async function previewMockupifyPlan(args: string[], values: Record<string
   try {
     const bindings = store?.listProductBindings() ?? [];
     return { source, registry, ...planMockupifyArtwork({
-      artworkSku, sourceRows, config, catalog, batches, batchDesigns, bindings,
+      artworkSku, sourceRows, config, approvedMappings, catalog, batches, batchDesigns, bindings,
     }) };
   } finally {
     store?.close();

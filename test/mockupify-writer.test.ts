@@ -472,6 +472,53 @@ test('live catalog price drift, running exports and active bindings pause dispat
   assert.deepEqual(api.posts, ['/api/batches/', '/api/designs/']);
 });
 
+test('dispatch holds an approved template that becomes a library product or loses its library status', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const id = await readyToExport(store, api);
+  const writer = api.writer(store);
+  const approval = api.approve(store, id, 'start_export');
+  const template = api.catalog.find(entry => entry.id === 10779)!;
+  template.library = true;
+  await assert.rejects(writer.dispatch(id, 'start_export', approval), { code: 'MOCKUPIFY_CATALOG_CHANGED' });
+  Reflect.deleteProperty(template, 'library');
+  await assert.rejects(writer.dispatch(id, 'start_export', approval), {
+    code: 'MOCKUPIFY_INVALID_RESPONSE',
+    message: 'Unexpected Mockupify response for product.library.',
+  });
+  assert.equal(store.getMockupifyJournal(id).claims.start_export, undefined);
+  assert.deepEqual(api.posts, ['/api/batches/', '/api/designs/']);
+});
+
+test('dispatch blocks a stored plan using an unapproved non-library template or its color IDs', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const { plan } = await api.writer(store).prepare(input, review, png);
+  const approved = api.catalog.find(entry => entry.id === plan.correlation.mockupifyTemplateId)!;
+  const lookalike = { ...approved, id: 99999, colors: approved.colors.map(color => ({ ...color, id: color.id + 100 })) };
+  api.catalog.push(lookalike);
+  const foreignColorIds = lookalike.colors.map(color => color.id);
+  const substituted = structuredClone(plan);
+  substituted.correlation.mockupifyTemplateId = lookalike.id;
+  substituted.correlation.mockupifyColorIds = foreignColorIds;
+  substituted.catalogColors = lookalike.colors;
+  const mismatched = structuredClone(plan);
+  mismatched.correlation.mockupifyColorIds = foreignColorIds;
+
+  for (const invalidPlan of [substituted, mismatched]) {
+    const legacyStore = new Store(':memory:');
+    t.after(() => legacyStore.close());
+    legacyStore.registerMockupifyPlan(invalidPlan);
+    const id = invalidPlan.correlation.correlationId;
+    await assert.rejects(api.writer(legacyStore).dispatch(id, 'create_batch', api.approve(legacyStore, id, 'create_batch')),
+      { code: 'MOCKUPIFY_CATALOG_CHANGED' });
+    assert.deepEqual(legacyStore.getMockupifyJournal(id).claims, {});
+  }
+  assert.deepEqual(api.posts, []);
+});
+
 test('the supervised request journal enforces the hourly account quota with a rolling window', t => {
   const store = new Store(':memory:');
   t.after(() => store.close());

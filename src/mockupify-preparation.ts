@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { integer, object, onlyKeys, requiredText } from './config.js';
+import { integer, object, onlyKeys, readJson, requiredText } from './config.js';
 import { WorkerError } from './model.js';
 import { fingerprintMockupifyMappings, parseMockupifyPlanningConfig, planMockupifyArtwork } from './mockupify-planning.js';
 import type { MockupifyExportBindingDraft } from './mockupify-planning.js';
@@ -49,6 +49,10 @@ export function parseApprovedMockupifyConfig(input: unknown) {
       independentlyAuthenticated: false as const,
     },
   };
+}
+
+export function readApprovedMockupifyConfig() {
+  return parseApprovedMockupifyConfig(readJson('config/mockupify-approved-v1.json', 'approved Mockupify mappings'));
 }
 
 export function parseMockupifyPreparationInput(input: unknown) {
@@ -139,7 +143,7 @@ export function prepareMockupifyExport(
   }
   if (source.title.length > 255) throw new WorkerError('MOCKUPIFY_TITLE_TOO_LONG', 'The design title must fit the documented 255-character limit.');
   const planned = planMockupifyArtwork({
-    ...live, config: approved.config, artworkSku: source.artworkSku,
+    ...live, config: approved.config, approvedMappings: approved.config.mappings, artworkSku: source.artworkSku,
     sourceRows: [{ ...source, colors: colors.map(color => color.name).join(', ') }],
   });
   const row = planned.rows[0]!;

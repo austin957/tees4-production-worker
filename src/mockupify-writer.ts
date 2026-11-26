@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { WorkerError } from './model.js';
 import { readMasterInputSupervisedRows } from './google-sheets.js';
@@ -7,7 +6,7 @@ import {
   mockupifyOrigin, mockupifyReadOnly, mockupifyRetryDelay,
   parseBatch, parseDesignEvidence, parseExportDetail,
 } from './mockupify-readonly.js';
-import { parseApprovedMockupifyConfig, parseMockupifyPreparationInput, prepareMockupifyExport } from './mockupify-preparation.js';
+import { parseMockupifyPreparationInput, prepareMockupifyExport, readApprovedMockupifyConfig } from './mockupify-preparation.js';
 import { mockupifyDigest, sha256 } from './mockupify-writer-model.js';
 import type {
   MockupifyApproval, MockupifyClaim, MockupifyJournal, MockupifyOperation, MockupifyPost,
@@ -91,10 +90,6 @@ function assertReview(source: SupervisedSourceRow, review: MockupifyReview) {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.myshopify\.com$/.test(shop.domain) || !nonblank(shop.connectionEvidence)) {
     stop('MOCKUPIFY_REVIEW_REQUIRED', 'Record evidence independently linking the Mockupify account to the exact Shopify shop.');
   }
-}
-
-function approvedConfig() {
-  return parseApprovedMockupifyConfig(JSON.parse(readFileSync('config/mockupify-approved-v1.json', 'utf8')) as unknown);
 }
 
 export function previewMockupifyOperation(journal: MockupifyJournal, operation: MockupifyOperation) {
@@ -257,7 +252,7 @@ export class SupervisedMockupifyWriter {
     }
     const reviewed = structuredClone(review);
     assertReview(source, reviewed);
-    const approved = approvedConfig();
+    const approved = readApprovedMockupifyConfig();
     const catalog = await this.reads.listProducts();
     const batches = await this.reads.listBatches();
     const designs = await this.reads.listDesigns();
@@ -282,17 +277,19 @@ export class SupervisedMockupifyWriter {
   }
 
   private async verifyCatalog(plan: SupervisedMockupifyPlan) {
-    const approved = approvedConfig();
+    const approved = readApprovedMockupifyConfig();
     const catalog = await this.reads.listProducts();
     const mapping = approved.config.mappings.find(entry => entry.garment === plan.source.garment);
     const template = catalog.filter(entry => entry.id === mapping?.templateId);
     if (!mapping || mapping.templateId !== plan.correlation.mockupifyTemplateId ||
       approved.approval.fingerprint !== plan.correlation.mappingFingerprint ||
-      template.length !== 1 || template[0]!.title !== mapping.templateTitle || template[0]!.type !== mapping.templateType ||
+      template.length !== 1 || template[0]!.library !== false || template[0]!.title !== mapping.templateTitle ||
+      template[0]!.type !== mapping.templateType || plan.catalogColors.length === 0 ||
+      !isDeepStrictEqual(plan.correlation.mockupifyColorIds, plan.catalogColors.map(color => color.id)) ||
       plan.catalogColors.some(approvedColor =>
         catalog.flatMap(entry => entry.colors).filter(color => color.id === approvedColor.id).length !== 1 ||
         !template[0]!.colors.some(color => isDeepStrictEqual(color, approvedColor)))) {
-      stop('MOCKUPIFY_CATALOG_CHANGED', 'The live template or selected colors no longer match the approved plan.');
+      stop('MOCKUPIFY_CATALOG_CHANGED', 'The plan must use the exact approved non-library template and its verified colors.');
     }
     await this.verifyShop(plan);
   }
@@ -300,7 +297,7 @@ export class SupervisedMockupifyWriter {
   private async confirmBatch(journal: MockupifyJournal, expectedCount: number): Promise<number> {
     const { batchId, plan } = journal;
     const batches = (await this.reads.listBatches()).filter(batch => batch.id === batchId || batch.name === plan.correlation.batchName);
-    if (batchId === null || batchId === approvedConfig().config.observedBatch.id || batches.length !== 1 ||
+    if (batchId === null || batchId === readApprovedMockupifyConfig().config.observedBatch.id || batches.length !== 1 ||
       batches[0]!.name !== plan.correlation.batchName || batches[0]!.id !== batchId || batches[0]!.designsCount !== expectedCount) {
       return stop('MOCKUPIFY_BATCH_MEMBERSHIP', 'The isolated batch ID, name or design count could not be confirmed.');
     }
@@ -390,7 +387,7 @@ export class SupervisedMockupifyWriter {
         case 'create_batch': {
           const batch = parseBatch(raw);
           if (batch.name !== plan.correlation.batchName || batch.designsCount !== 0 ||
-            batch.id === approvedConfig().config.observedBatch.id) {
+            batch.id === readApprovedMockupifyConfig().config.observedBatch.id) {
             stop('MOCKUPIFY_BATCH_MEMBERSHIP', 'The batch acknowledgment does not establish a new isolated batch.');
           }
           outcome.batchId = batch.id;
@@ -484,7 +481,7 @@ export class SupervisedMockupifyWriter {
     const batch = batches.length === 1 ? batches[0] : undefined;
     const designs = batch ? await this.reads.listDesignEvidence(batch.id) : [];
     let confirmedId: number | undefined;
-    if (batch && batch.id !== approvedConfig().config.observedBatch.id) {
+    if (batch && batch.id !== readApprovedMockupifyConfig().config.observedBatch.id) {
       if (recoveringBatch && batch.designsCount === 0 && designs.length === 0) confirmedId = batch.id;
       if (!recoveringBatch && batch.id === journal.batchId && batch.designsCount === 1 && designs.length === 1) {
         try {

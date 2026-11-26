@@ -1,6 +1,5 @@
-import { readFileSync } from 'node:fs';
 import { object, integer, onlyKeys, readJson, requiredText } from './config.js';
-import { mockupifyCorrelation, parseApprovedMockupifyConfig } from './mockupify-preparation.js';
+import { mockupifyCorrelation, readApprovedMockupifyConfig } from './mockupify-preparation.js';
 import { mockupifyOperations } from './mockupify-writer-model.js';
 import type { MockupifyOperation } from './mockupify-writer-model.js';
 import { previewMockupifyOperation, SupervisedMockupifyWriter } from './mockupify-writer.js';
@@ -19,7 +18,7 @@ export const mockupifyWriterCommands = {
 } as const;
 
 export function pilotMockupifyDryRun() {
-  const approved = parseApprovedMockupifyConfig(JSON.parse(readFileSync('config/mockupify-approved-v1.json', 'utf8')));
+  const approved = readApprovedMockupifyConfig();
   const template = approved.config.mappings.find(mapping => mapping.garment === 'Adult Tank Top')!;
   const productSku = '8419620257-S105';
   const correlation = mockupifyCorrelation(masterInput.spreadsheetId, productSku);

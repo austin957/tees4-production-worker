@@ -116,9 +116,18 @@ test('Mockupify rejects malformed JSON, incomplete pages and missing template ID
   }
 });
 
-test('Mockupify returns the template and color IDs from the product catalog', async () => {
-  const client = mockupifyReadOnly(env, async () => page([product]));
-  assert.deepEqual(await client.listProducts(), [product]);
+test('Mockupify preserves catalog library flags and rejects unknown library status', async () => {
+  const libraryProduct = { ...product, id: 5, library: true };
+  const client = mockupifyReadOnly(env, async () => page([product, libraryProduct]));
+  assert.deepEqual(await client.listProducts(), [product, libraryProduct]);
+
+  for (const library of [undefined, null, 'false', 0]) {
+    const invalid = mockupifyReadOnly(env, async () => page([{ ...product, library }]));
+    await assert.rejects(invalid.listProducts(), {
+      code: 'MOCKUPIFY_INVALID_RESPONSE',
+      message: 'Unexpected Mockupify response for product.library.',
+    });
+  }
 });
 
 test('Mockupify accepts historical null batches and empty product lists', async () => {
