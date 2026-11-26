@@ -1,7 +1,8 @@
 import { object, integer, onlyKeys, readJson, requiredText } from './config.js';
-import { mockupifyCorrelation, readApprovedMockupifyConfig } from './mockupify-preparation.js';
+import { assertMockupifyPng, mockupifyCorrelation, readApprovedMockupifyConfig, readMockupifyPng } from './mockupify-preparation.js';
+import { assertMockupifyPilotPlan, assertMockupifyPilotReview, mockupifyPilot, parseMockupifyReview } from './mockupify-pilot.js';
 import { mockupifyOperations } from './mockupify-writer-model.js';
-import type { MockupifyOperation } from './mockupify-writer-model.js';
+import type { MockupifyApproval, MockupifyOperation } from './mockupify-writer-model.js';
 import { previewMockupifyOperation, SupervisedMockupifyWriter } from './mockupify-writer.js';
 import type { MockupifyRecoveryEvidence } from './mockupify-writer.js';
 import { WorkerError } from './model.js';
@@ -11,6 +12,8 @@ import { Store } from './store.js';
 
 export const mockupifyWriterCommands = {
   'mockupify-writer-dry-run': {},
+  'mockupify-writer-register': {},
+  'mockupify-writer-dispatch': { execute: { type: 'boolean' } },
   'mockupify-writer-inspect': {},
   'mockupify-writer-preview': {},
   'mockupify-writer-reconcile': {},
@@ -21,8 +24,9 @@ export const mockupifyWriterCommands = {
 
 export function pilotMockupifyDryRun() {
   const approved = readApprovedMockupifyConfig();
-  const template = approved.config.mappings.find(mapping => mapping.garment === 'Adult Tank Top')!;
-  const productSku = '8419620257-S105';
+  const pilot = mockupifyPilot;
+  const template = approved.config.mappings.find(mapping => mapping.garment === pilot.garment)!;
+  const { productSku, artworkSku, row } = pilot;
   const correlation = mockupifyCorrelation(masterInput.spreadsheetId, productSku);
   return {
     mode: 'dry_run',
@@ -31,23 +35,20 @@ export function pilotMockupifyDryRun() {
     httpRequests: 0,
     journalClaims: 0,
     source: {
-      spreadsheetId: masterInput.spreadsheetId, worksheet: masterInput.tab, row: 9,
-      artworkSku: '8419620257', productSku, garment: template.garment,
-      sheetArtworkName: 'SKU TEST', productTitle: 'Bold Arrow Emblem', artworkRegistryName: 'Bold Arrow Emblem',
+      spreadsheetId: masterInput.spreadsheetId, worksheet: masterInput.tab, row,
+      artworkSku, productSku, garment: template.garment,
+      sheetArtworkName: pilot.sheetArtworkName, productTitle: pilot.title, artworkRegistryName: pilot.title,
       artworkNameDiscrepancy: 'preserved_source_name',
     },
     template: { ...template, review: 'owner_approved_mapping_only' },
-    colors: [
-      { name: 'Black', id: 20514, review: 'owner_approved' },
-      { name: 'White', id: 20515, review: 'owner_approved' },
-    ],
+    colors: pilot.colors.map(color => ({ ...color, review: 'owner_approved' })),
     correlation,
     trace: [
       { method: 'POST', path: '/api/batches/', body: { name: correlation.batchName }, status: 'blocked' },
       { method: 'POST', path: '/api/designs/', fields: { batch: null, design_id: correlation.designReference, file: null },
         status: 'blocked', pending: ['isolated batch ID', 'approved metadata and attribution', 'reviewed PNG digest'] },
       { method: 'GET', path: '/api/designs/?batch={id}', status: 'awaiting_batch_and_design' },
-      { method: 'POST', path: '/api/exports/', body: { batch: null, colors: [20514, 20515] }, status: 'blocked' },
+      { method: 'POST', path: '/api/exports/', body: { batch: null, colors: pilot.colors.map(color => color.id) }, status: 'blocked' },
       { method: 'GET', path: '/api/exports/{id}/', status: 'awaiting_export' },
       { system: 'Shopify', status: 'awaiting_product_gid_and_shop_verification',
         expectedProductStatus: 'ACTIVE', expectedSalesChannelPublications: 0 },
@@ -79,7 +80,39 @@ function recoveryEvidence(path: string): MockupifyRecoveryEvidence {
   };
 }
 
-export async function runMockupifyWriterCommand(command: string, args: string[], databasePath: string) {
+function mockupifyOperation(value: unknown): MockupifyOperation {
+  const operation = mockupifyOperations.find(candidate => candidate === value);
+  if (!operation) throw new WorkerError('MOCKUPIFY_OPERATION', 'Supply create_batch, upload_design or start_export.');
+  return operation;
+}
+
+function readApproval(path: string): MockupifyApproval {
+  const value = object(readJson(path, 'Owner approval'), 'Owner approval');
+  onlyKeys(value, ['operation', 'digest', 'by', 'evidence', 'expiresAt'], 'Owner approval');
+  return {
+    operation: mockupifyOperation(value.operation),
+    digest: requiredText(value.digest, 'Operation approval digest'),
+    by: requiredText(value.by, 'Approving owner'),
+    evidence: requiredText(value.evidence, 'Owner approval evidence'),
+    expiresAt: integer(value.expiresAt, 'Owner approval expiresAt', 1, Number.MAX_SAFE_INTEGER),
+  };
+}
+
+function operationPreview(store: Store, id: string, operation: MockupifyOperation) {
+  const journal = store.getMockupifyJournal(id);
+  const claim = journal.claims[operation];
+  const preview = previewMockupifyOperation(journal, operation);
+  return {
+    ...preview, method: 'POST',
+    ...(claim ? { request: claim.request, requestDigest: claim.requestDigest, approvalDigest: claim.approval.digest } : {}),
+    claimState: claim?.state ?? null, executionAuthorized: false,
+  };
+}
+
+export async function runMockupifyWriterCommand(
+  command: string, args: string[], databasePath: string,
+  { execute = false, exportMarginMinutes }: { execute?: boolean; exportMarginMinutes?: number | undefined } = {},
+) {
   const [id, argument] = args;
   if (command === 'mockupify-writer-dry-run') {
     if (args.length) throw new WorkerError('CLI_USAGE', 'The dry-run command uses only the offline pilot fixture.');
@@ -97,25 +130,64 @@ export async function runMockupifyWriterCommand(command: string, args: string[],
       store.close();
     }
   }
-  const validArity = command === 'mockupify-writer-preview' ? args.length === 2 :
-    command === 'mockupify-writer-reconcile' ? args.length === 1 || args.length === 2 : args.length === 1;
+  const env = process.env;
+  if (command === 'mockupify-writer-register') {
+    if (args.length !== 3 || args.some(value => !value)) {
+      throw new WorkerError('CLI_USAGE', 'Supply the preparation JSON, reviewed PNG and metadata-review JSON.');
+    }
+    const input = readJson(id!, 'Mockupify preparation');
+    const png = readMockupifyPng(argument!);
+    const review = parseMockupifyReview(readJson(args[2]!, 'Metadata review'));
+    assertMockupifyPilotReview(review);
+    assertMockupifyPng(png, mockupifyPilot.pngSha256);
+    const store = new Store(databasePath);
+    try {
+      const writer = new SupervisedMockupifyWriter({
+        store, env, mode: 'production', shopify: new ShopifyReadonlyClient(shopifyExportReadConfig(env)),
+        validatePlan: assertMockupifyPilotPlan,
+      });
+      return await writer.prepare(input, review, png);
+    } finally {
+      store.close();
+    }
+  }
+  if (command === 'mockupify-writer-dispatch' && execute) {
+    const operation = mockupifyOperation(argument);
+    const upload = operation === 'upload_design';
+    if (args.length !== (upload ? 4 : 3) || args.some(value => !value)) {
+      throw new WorkerError('CLI_USAGE', 'Execution requires one operation, its owner-approval JSON and, for upload_design only, the reviewed PNG.');
+    }
+    const approval = readApproval(args[2]!);
+    const png = upload ? readMockupifyPng(args[3]!) : undefined;
+    const store = new Store(databasePath, { existing: true });
+    try {
+      const writer = new SupervisedMockupifyWriter({
+        store, env, mode: 'production', shopify: new ShopifyReadonlyClient(shopifyExportReadConfig(env)),
+        ...(exportMarginMinutes === undefined ? {} : { exportMarginMinutes }),
+        validatePlan: assertMockupifyPilotPlan,
+      });
+      const journal = await writer.dispatch(id!, operation, approval, png);
+      return { journal, reconciliationRequired: journal.claims[operation]?.state === 'uncertain' };
+    } finally {
+      store.close();
+    }
+  }
+
+  const preview = command === 'mockupify-writer-preview' || command === 'mockupify-writer-dispatch';
+  const reconcile = command === 'mockupify-writer-reconcile';
+  const validArity = preview ? args.length === 2 : reconcile ? args.length === 1 || args.length === 2 : args.length === 1;
   if (!validArity || !id) throw new WorkerError('CLI_USAGE', 'Wrong number of arguments. Run worker help for usage.');
-  const store = new Store(databasePath, { readOnly: command !== 'mockupify-writer-reconcile' });
+  const store = new Store(databasePath, { readOnly: !reconcile, existing: reconcile });
   try {
+    if (preview) return operationPreview(store, id, mockupifyOperation(argument));
     switch (command) {
       case 'mockupify-writer-inspect': return store.inspectMockupifyJournal(id);
       case 'mockupify-writer-backup':
         await store.backupTo(id);
         return { backupPath: id, productionDurabilityVerified: false };
-      case 'mockupify-writer-preview':
-        if (!mockupifyOperations.includes(argument as MockupifyOperation)) {
-          throw new WorkerError('MOCKUPIFY_OPERATION', 'Supply create_batch, upload_design or start_export.');
-        }
-        return { ...previewMockupifyOperation(store.getMockupifyJournal(id), argument as MockupifyOperation),
-          executionAuthorized: false };
       case 'mockupify-writer-reconcile': {
         const writer = new SupervisedMockupifyWriter({
-          store, env: process.env, shopify: new ShopifyReadonlyClient(shopifyExportReadConfig(process.env)),
+          store, env, shopify: new ShopifyReadonlyClient(shopifyExportReadConfig(env)),
         });
         return await writer.reconcile(id, argument ? recoveryEvidence(argument) : undefined);
       }

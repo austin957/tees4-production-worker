@@ -1,6 +1,6 @@
 # Row 9 supervised pilot preflight
 
-Phase 21B cleared the Shopify publication read-access blocker. Phase 21D confirms the configured Hextom schedule timezone. The run-history display timezone and a safe interval for the pilot remain unverified. Live Mockupify export dispatch remains disabled pending a verified Hextom-safe interval and the artwork, metadata, storage and authorization prerequisites below.
+Phase 21B cleared the Shopify publication read-access blocker. Phase 21D confirms the configured Hextom schedule timezone. The run-history display timezone and a safe interval for the pilot remain unverified. The [supervised CLI](mockupify-writer.md#windows-powershell) requires a verified Hextom-safe interval, artwork, metadata, durable storage and operation-specific approvals before dispatch.
 
 ## Owner approval record
 
@@ -10,23 +10,23 @@ The November 25, 2026 Phase 21 instructions and Phase 21A clarification are the 
 | --- | --- |
 | Source | Design Input Master (`1UxdIY03ICu5t2G0fEo0nor6-giAEF4xdMuNEvYN_JMM`) → Master Input, physical row 9 |
 | Original artwork-name cell | `SKU TEST`, preserved verbatim |
-| Customer-facing Shopify title | `Bold Arrow Emblem` |
+| Mockupify design title | `Bold Arrow Emblem` |
 | Artwork SKU and Product SKU | `8419620257` and `8419620257-S105` |
 | Garment and approved template | Adult Tank Top, `10779` |
 | Approved colors in request order | Black `20514`, White `20515` |
-| Pilot designer attribution | `Tees-4` |
-| Approved artwork scope | The reviewed original PNG and its reviewed, pixel-identical compressed copy |
+| Vendor, designer attribution and tags | `test test`, `Tees-4`, `Family, Grandpa` |
+| Approved artwork scope | Reviewed original and compressed copy. Prepared SHA-256 `6bae2628c23f42d960ef36e488bde69f84fe994d68e084218674b465a9354d17` |
 | Intended Shopify destination | `gid://shopify/Shop/76973965603` |
 
 ## Evidence and limits
 
 - The owner supplied the corrected physical row and its values for columns A, B, E, H and K. The CLI dry-run uses that offline fixture. Supervised preparation and dispatch require a fresh read through the worker's read-only Sheets adapter to verify the physical row, its unique Product SKU, its Artwork SKU and garment, and the rest of the approved source data.
-- The previously reviewed original artwork is a 3300 × 2137 RGBA PNG, 1,542,125 bytes, above the worker's 1,500,000-byte upload limit. Confirm the corrected row's artwork reference before relying on the earlier review. The reviewed compressed bytes and their SHA-256 remain outstanding. Keep the original and decoded pixel hashes with the private operational evidence.
+- The previously reviewed original artwork is a 3300 × 2137 RGBA PNG, 1,542,125 bytes, above the worker's 1,500,000-byte upload limit. Confirm the corrected row's artwork reference before relying on the earlier review. Supply the reviewed compressed bytes matching the approved SHA-256. Keep the original and decoded pixel hashes with the private operational evidence.
 - The authenticated Mockupify template read confirmed both color IDs on template `10779`, each with a base price of `18.99` and sizes X-Small, Small, Medium, Large, X-Large, 2X-Large and 3X-Large. Those selections project 14 color/size combinations. The API exposes neither size price adjustments nor final option ordering.
 - The Shopify read-only client verified the shop GID. Mockupify's authenticated OpenAPI contract exposes no connected-shop read. Obtain independent evidence of the account's current Shopify destination. The export request has only `batch` and `colors` fields.
 - The owner confirmed that Mockupify creates an **Active** Shopify product with **zero sales-channel publications** and an existing Hextom automation later assigns channels. In Phase 21B, Shopify Admin GraphQL `2026-10` returned `gid://shopify/Shop/76973965603` and reported exactly `read_products` and `read_publications` for the export verification app. The worker's publication query returned valid data for a sample product. The pilot still requires a direct read of the exact exported Product GID showing zero current or staged sales-channel publications. [Shopify Product publication fields](https://shopify.dev/docs/api/admin-graphql/latest/objects/product#field-Product.fields.resourcePublicationsV2)
 - Mockupify documents that it joins the design title, template title and extra title. With the approved title as the design title, the documented composition yields `Bold Arrow Emblem Adult Tank Top`. A supported title configuration or separate approval for an exact composed title is needed. The final description and tags also combine template and design values. Review the template's actual description and tags, the exact upload fields, the vendor and its distinction from designer attribution, and all variant prices before authorization. Verify the resulting tags exclude `adjust`. [Mockupify OpenAPI](https://mockupify.io/api/schema/)
-- The task workspace and shared/download directories use the same local overlay. The environment exposes one executor and no configured persistent data volume or separate restore target. Codex starts new tasks from their prepared environment in separate workspaces. The existing SQLite backup and restore test checks the claim, request digest, correlation ID, product binding and both audit histories locally. Production admission remains disabled until a separate Codex task can open the latest journal from owner-controlled durable storage and verify those records. [Codex Cloud task isolation](https://help.openai.com/en/articles/20001545-using-codex-cloud)
+- The task workspace and shared/download directories use the same local overlay. The environment exposes one executor and no configured persistent data volume or separate restore target. Codex starts new tasks from their prepared environment in separate workspaces. The existing SQLite backup and restore test checks the claim, request digest, correlation ID, product binding and both audit histories locally. The pilot requires owner-controlled durable storage and a passing durability check for the actual SQLite path and backup directory. [Codex Cloud task isolation](https://help.openai.com/en/articles/20001545-using-codex-cloud)
 
 ## Hextom publication timing
 
@@ -56,7 +56,7 @@ Read the APP publication connection for the exact exported Shopify Product GID i
 
 ## Operation previews
 
-Use the [supervised writer](mockupify-writer.md) to produce the approval digest from the exact complete plan, request, expected side effects and current journal IDs. The previews below are non-dispatchable. Nulls denote unresolved values. Where design metadata is incomplete, obtain explicit approval for all six design fields before generating any operation approval digest. The batch request itself already has a stable request digest.
+Use the [supervised writer](mockupify-writer.md) to register the complete plan and preview the exact request, expected side effects, current journal IDs and approval digest. The examples below show the expected request shapes. Nulls denote unresolved values. Where design metadata is incomplete, obtain explicit approval for all six design fields before generating any operation approval digest. The batch request itself already has a stable request digest.
 
 ### A · Create the isolated batch
 
@@ -69,7 +69,7 @@ Use the [supervised writer](mockupify-writer.md) to produce the approval digest 
 
 ### B · Upload the approved PNG
 
-`POST /api/designs/` with multipart fields `batch`, `title`, `description`, `extra_title`, `search_tags`, `vendor`, `extra_price`, `design_id` and `file`. The design reference is `tees4:6b7ffdea53cc1985343b375aabac5d5c421911de79c06f45c7159868ed643eea`. The file part uses name `review.png` and media type `image/png`. The batch ID, exact approved final design fields and reviewed compressed PNG digest are pending.
+`POST /api/designs/` with multipart fields `batch`, `title`, `description`, `extra_title`, `search_tags`, `vendor`, `extra_price`, `design_id` and `file`. The design reference is `tees4:6b7ffdea53cc1985343b375aabac5d5c421911de79c06f45c7159868ed643eea`. The file part uses name `review.png` and media type `image/png`. The real batch ID and the rest of the exact reviewed design fields come from the journal and metadata review.
 
 - Effect. One design and its reviewed metadata in the reserved batch.
 - Approval digest. Pending the exact batch ID and upload fields, including the verified prepared artwork SHA-256.

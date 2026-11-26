@@ -1,8 +1,62 @@
-# Phase 20 supervised Mockupify writer
+# Supervised Mockupify writer
 
 See the [Phase 21 row 9 approval record and preflight](mockupify-pilot-row-9.md) for current pilot evidence.
 
-The existing export queue still uses its simulator. Phase 20 builds and validates the documented Mockupify POST requests through a separately injected fake HTTP transport. Simulation uses `mockupify.invalid` and a synthetic credential. The CLI exposes offline preview and local inspection, SQLite backup, and reconciliation using read-only vendor APIs. There is no CLI dispatch command. The shipped SQLite Store cannot admit production dispatch because it has no verified durability capability.
+The existing export queue uses its simulator. The supervised CLI uses the same writer and SQLite journal for the Bold Arrow Emblem pilot. Registration reads the providers and records the plan locally. A dispatch invocation needs an explicit `--execute` flag and the owner approval for one operation.
+
+## Windows PowerShell
+
+Run from the repository root with Node.js 24. Use owner-controlled storage for the existing worker database and its verification backups. Use the same `TEES4_DATABASE` for every step. Set up Google Application Default Credentials for read-only access to Master Input, `TEES4_MOCKUPIFY_API_KEY`, and the dedicated Shopify credentials scoped to `read_products` and `read_publications`.
+
+```powershell
+npm.cmd ci
+npm.cmd run build
+$env:TEES4_DATABASE = 'C:\Tees4\worker.sqlite'
+$backupDirectory = 'D:\Tees4 Backups'
+$correlationId = '6b7ffdea53cc1985343b375aabac5d5c421911de79c06f45c7159868ed643eea'
+npm.cmd run --silent worker -- mockupify-writer-dry-run
+npm.cmd run --silent worker -- mockupify-writer-register '.\preparation.json' '.\review.png' '.\metadata-review.json'
+npm.cmd run --silent worker -- mockupify-writer-inspect $correlationId
+npm.cmd run --silent worker -- mockupify-writer-preview $correlationId create_batch
+npm.cmd run --silent worker -- mockupify-durability-verify $backupDirectory
+npm.cmd run --silent worker -- mockupify-durability-status
+```
+
+Use the input JSON already accepted by [`mockupify-prepare`](mockupify.md#prepare-a-supervised-export). Supply the reviewed PNG whose SHA-256 is `6bae2628c23f42d960ef36e488bde69f84fe994d68e084218674b465a9354d17`. Registration reads the exact physical row and checks the approved non-library template, its Black and White selections at the catalog price of `18.99`, and the 14 reviewed color and size combinations. It preserves the live `SKU TEST` artwork name and requires `Bold Arrow Emblem` as the Mockupify design title. The expected Shopify title is supplied in the review after checking template title composition.
+
+Supply these fields in the separate metadata-review JSON. Use UTF-8 JSON and store the files in access-controlled local storage. UTF-8 with a byte-order mark is accepted.
+
+| Field | Required value |
+| --- | --- |
+| `artworkRegistryName`, `artworkNameResolution`, `designerAttribution` | `Bold Arrow Emblem`, the evidence for keeping `SKU TEST` in the source cell, and `Tees-4` |
+| `design` | Exact strings for `title`, `description`, `extra_title`, `search_tags`, `vendor`, and `extra_price`. The pilot uses an empty `extra_title`, `Family, Grandpa`, `test test` and `0.00`. Include the attribution in the description. |
+| `shop` | `id` and `domain` for the approved shop, with independent `connectionEvidence` linking the Mockupify account to it |
+| `product` | Exact expected Shopify `title`, `descriptionHtml` including the attribution, `vendor`, `tags` array, and `status` of `ACTIVE`. Provide `variants` as all 14 reviewed entries, each with an `options` object mapping exact option names to strings and a `price` string. Catalog color prices alone cannot establish final Shopify variant prices. |
+| `exclusiveBatchControlEvidence` | Evidence that this pilot has exclusive control of its isolated batch through export completion |
+| `publicationSafety` | Verified Hextom rule and safety `evidence`, interval `startsAt` and `endsAt` as Unix epoch milliseconds, and the required `minimumMinutes` for completing the export and observations |
+
+The complete plan, including its publication-safety interval, is bound into each operation's digest. Inspect it and review the exact preview before requesting approval. If the plan conflicts with an existing registration, stop and inspect the journal. The CLI has no plan replacement or claim reset command.
+
+### Dispatch one operation
+
+The next pilot operation is `create_batch`. The local command `mockupify-writer-dispatch $correlationId create_batch` is equivalent to a preview. Once the owner has explicitly authorized the exact batch request, put that operation's approval in its own JSON file with `operation`, `digest` (the preview's `approvalDigest`), `by`, `evidence` and `expiresAt` (Unix epoch milliseconds). The existing owner attestation model trusts the operator to supply the owner's actual evidence.
+
+```powershell
+npm.cmd run --silent worker -- mockupify-writer-dispatch $correlationId create_batch --execute '.\batch-approval.json'
+npm.cmd run --silent worker -- mockupify-writer-reconcile $correlationId
+```
+
+When separately authorized, use the following operation-specific commands. Preview upload after the journal has a verified batch ID. Preview export after it also has a verified design ID. Set `TEES4_MOCKUPIFY_EXPORT_MARGIN_MINUTES` to the approved positive integer margin before export.
+
+```powershell
+npm.cmd run --silent worker -- mockupify-writer-preview $correlationId upload_design
+npm.cmd run --silent worker -- mockupify-writer-dispatch $correlationId upload_design --execute '.\upload-approval.json' '.\review.png'
+npm.cmd run --silent worker -- mockupify-writer-preview $correlationId start_export
+npm.cmd run --silent worker -- mockupify-writer-dispatch $correlationId start_export --execute '.\export-approval.json'
+npm.cmd run --silent worker -- mockupify-writer-reconcile $correlationId
+```
+
+If dispatch reports `reconciliationRequired: true`, or exits after a claim without a usable acknowledgment, inspect and reconcile the journal. Reconciliation uses provider reads and updates the local journal. For an ambiguous batch or design acknowledgment, pass the separately reviewed recovery attestation as the second positional argument to `mockupify-writer-reconcile`.
 
 ## Row 9 dry run
 
@@ -12,7 +66,7 @@ Run from the repository root after building.
 npm run --silent worker -- mockupify-writer-dry-run
 ```
 
-The offline command uses an owner-supplied fixture and reports zero HTTP requests and zero claims. It records Master Input row 9, Artwork SKU `8419620257`, Product SKU `8419620257-S105`, and the approved Adult Tank Top mapping to template `10779`. Black `20514` and White `20515` are owner-approved. The trace preserves **SKU TEST** as the source artwork name and **Bold Arrow Emblem** as the Shopify product title. It shows the expected Active status with zero channel publications and keeps the reviewed compressed PNG and exact upload metadata pending. Batch, design, export and Shopify Product GID are unset.
+The offline command uses an owner-supplied fixture and reports zero HTTP requests and zero claims. It records Master Input row 9, Artwork SKU `8419620257`, Product SKU `8419620257-S105`, and the approved Adult Tank Top mapping to template `10779`. Black `20514` and White `20515` are owner-approved. The trace preserves **SKU TEST** as the source artwork name and **Bold Arrow Emblem** as the proposed display title. It shows the expected Active status with zero channel publications and keeps the reviewed compressed PNG and exact upload metadata pending. Batch, design, export and Shopify Product GID are unset.
 
 ## Claims and preflight
 
@@ -52,4 +106,4 @@ TEES4_DATABASE=/path/to/restored.sqlite npm run --silent worker -- binding-inspe
 
 For a cutover, stop all dispatchers, back up the database while they are stopped, preserve the latest database and any WAL files, copy the backup to a fresh path, and verify journal claims, identifier relationships, and binding histories before considering that store for use. Resolve any outstanding claims against fresh read-only evidence. A snapshot older than any possible POST cannot establish that an operation was never sent. If the latest journal is lost, stop dispatch and reconcile with the providers and owner records before creating any new authorization.
 
-Tests cover a local process exit after a simulated vendor write, reopening SQLite, backup and restoration of both the claim and binding history, and duplicate prevention after restore. Actual storage and restoration across Codex environment replacement remain unverified. Before any supervised production pilot, establish that storage and rehearse cutover, obtain the outstanding owner approvals, and verify the account, publication access, Hextom-safe interval and restricted schedule.
+Tests cover a local process exit after a simulated vendor write, reopening SQLite, backup and restoration of both the claim and binding history, and duplicate prevention after restore. Durability verification exercises the actual database and backup directory and expires after 24 hours. It cannot establish storage persistence across a Codex environment replacement. Before the pilot, confirm owner-controlled storage and check that the exact configured database is admitted.

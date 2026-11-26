@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
 import { integer, object, onlyKeys, readJson, requiredText } from './config.js';
 import { WorkerError } from './model.js';
 import { fingerprintMockupifyMappings, parseMockupifyPlanningConfig, planMockupifyArtwork } from './mockupify-planning.js';
@@ -128,6 +129,26 @@ export function mockupifyCorrelation(spreadsheetId: string, productSku: string) 
   return { correlationId, batchName: `tees4-${correlationId.slice(0, 32)}`, designReference: `tees4:${correlationId}` };
 }
 
+const maxPngBytes = 1_500_000;
+const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+
+export function readMockupifyPng(path: string): Buffer {
+  try {
+    const info = statSync(path);
+    if (!info.isFile() || info.size < pngSignature.length || info.size > maxPngBytes) throw new Error('Invalid PNG size');
+    return readFileSync(path);
+  } catch {
+    throw new WorkerError('MOCKUPIFY_PNG_READ', 'Supply a readable local PNG within the documented size limit.');
+  }
+}
+
+export function assertMockupifyPng(bytes: Uint8Array, expectedSha256: string): void {
+  if (bytes.length < pngSignature.length || bytes.length > maxPngBytes ||
+    !Buffer.from(bytes.subarray(0, pngSignature.length)).equals(pngSignature) || digest(bytes) !== expectedSha256) {
+    throw new WorkerError('MOCKUPIFY_PNG_EVIDENCE_MISMATCH', 'The local PNG must match the reviewed digest and fit within 1,500,000 bytes.');
+  }
+}
+
 export function prepareMockupifyExport(
   approved: ReturnType<typeof parseApprovedMockupifyConfig>,
   input: ReturnType<typeof parseMockupifyPreparationInput>,
@@ -136,11 +157,7 @@ export function prepareMockupifyExport(
   liveDesignReferences: readonly (string | null)[],
 ) {
   const { source, colors, png } = input;
-  if (pngBytes.length < 8 || pngBytes.length > 1_500_000 ||
-    !Buffer.from(pngBytes.subarray(0, 8)).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
-    digest(pngBytes) !== png.preparedSha256) {
-    throw new WorkerError('MOCKUPIFY_PNG_EVIDENCE_MISMATCH', 'The local PNG must match the reviewed digest and fit within 1,500,000 bytes.');
-  }
+  assertMockupifyPng(pngBytes, png.preparedSha256);
   if (source.title.length > 255) throw new WorkerError('MOCKUPIFY_TITLE_TOO_LONG', 'The design title must fit the documented 255-character limit.');
   const planned = planMockupifyArtwork({
     ...live, config: approved.config, approvedMappings: approved.config.mappings, artworkSku: source.artworkSku,

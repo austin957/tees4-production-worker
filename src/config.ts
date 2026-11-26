@@ -11,7 +11,7 @@ export function readJson(path: string, purpose: string): unknown {
     throw new WorkerError('FILE_READ', `Could not read the ${purpose} file at ${path}.`);
   }
   try {
-    return JSON.parse(content) as unknown;
+    return JSON.parse(content.replace(/^\uFEFF/, '')) as unknown;
   } catch {
     throw new WorkerError('INVALID_JSON', `The ${purpose} file must contain valid JSON.`);
   }

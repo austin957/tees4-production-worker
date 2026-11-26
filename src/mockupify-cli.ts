@@ -1,9 +1,9 @@
-import { readFileSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { integer, object, onlyKeys, readJson, requiredText } from './config.js';
 import { readMasterInputMockupifyRows } from './google-sheets.js';
 import { parseMockupifyPlanningConfig, planMockupifyArtwork } from './mockupify-planning.js';
 import {
-  parseApprovedMockupifyConfig, parseMockupifyPreparationInput, prepareMockupifyExport, readApprovedMockupifyConfig,
+  parseApprovedMockupifyConfig, parseMockupifyPreparationInput, prepareMockupifyExport, readApprovedMockupifyConfig, readMockupifyPng,
 } from './mockupify-preparation.js';
 import type { MockupifySourceRow } from './mockupify-planning.js';
 import { Store } from './store.js';
@@ -109,15 +109,7 @@ export async function previewMockupifyPreparation(args: string[], save: boolean,
   if (args.length !== 3) throw new WorkerError('CLI_USAGE', 'Supply a preparation JSON, an approved mapping JSON and a local PNG.');
   const input = parseMockupifyPreparationInput(readJson(args[0]!, 'Mockupify preparation'));
   const approved = parseApprovedMockupifyConfig(readJson(args[1]!, 'approved Mockupify mappings'));
-  let png: Buffer;
-  try {
-    const path = args[2]!;
-    const info = statSync(path);
-    if (!info.isFile() || info.size < 8 || info.size > 1_500_000) throw new Error('Invalid PNG size');
-    png = readFileSync(path);
-  } catch {
-    throw new WorkerError('MOCKUPIFY_PNG_READ', 'Supply a readable local PNG within the documented size limit.');
-  }
+  const png = readMockupifyPng(args[2]!);
   const client = mockupifyReadOnly();
   const [catalog, batches, designs] = await Promise.all([
     client.listProducts(), client.listBatches(), client.listDesigns(),

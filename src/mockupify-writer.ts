@@ -193,6 +193,7 @@ export class SupervisedMockupifyWriter {
     clock?: () => number;
     sleep?: (ms: number) => Promise<void>;
     exportMarginMinutes?: number;
+    validatePlan?: (plan: SupervisedMockupifyPlan) => void;
   }) {
     this.mode = options.mode ?? 'dry_run';
     this.clock = options.clock ?? Date.now;
@@ -264,6 +265,7 @@ export class SupervisedMockupifyWriter {
     const selectedColors = prepared.colors.map(color => template.colors.find(entry => entry.id === color.mockupifyColorId)!);
     const plan = { mode: this.mode, correlation: report.correlation, source, review: reviewed,
       artwork: prepared.png, colors: prepared.colors, catalogColors: selectedColors };
+    this.options.validatePlan?.(plan);
     await this.verifyShop(plan);
     return this.options.store.registerMockupifyPlan(plan);
   }
@@ -325,6 +327,7 @@ export class SupervisedMockupifyWriter {
     checkDurability();
     if (plan.mode !== this.mode) stop('MOCKUPIFY_MODE_MISMATCH', 'The journal and dispatch mode must match.');
     assertReview(plan.source, plan.review);
+    this.options.validatePlan?.(plan);
     const checkWindow = () => {
       if (operation !== 'start_export') return;
       const now = this.clock();

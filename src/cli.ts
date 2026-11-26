@@ -44,6 +44,9 @@ const help = `Tees-4 Production Worker
   mockupify-exports
   mockupify-export <export-id>
   mockupify-writer-dry-run
+  mockupify-writer-register <preparation.json> <review.png> <metadata-review.json>
+  mockupify-writer-dispatch <correlation-id> <create_batch|upload_design|start_export>
+    [--execute <owner-approval.json> [review.png for upload_design]]
   mockupify-writer-inspect <correlation-id>
   mockupify-writer-preview <correlation-id> <create_batch|upload_design|start_export>
   mockupify-writer-reconcile <correlation-id> [recovery-attestation.json]
@@ -135,8 +138,10 @@ async function main(): Promise<void> {
     return;
   }
   if (Object.hasOwn(mockupifyWriterCommands, command)) {
-    const { databasePath } = settings(process.env);
-    const result = await runMockupifyWriterCommand(command, positionals, databasePath);
+    const { databasePath, exportMarginMinutes } = settings(process.env);
+    const result = await runMockupifyWriterCommand(command, positionals, databasePath, {
+      execute: values.execute === true, exportMarginMinutes,
+    });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
