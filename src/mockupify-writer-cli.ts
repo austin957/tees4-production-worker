@@ -15,6 +15,8 @@ export const mockupifyWriterCommands = {
   'mockupify-writer-preview': {},
   'mockupify-writer-reconcile': {},
   'mockupify-writer-backup': {},
+  'mockupify-durability-status': {},
+  'mockupify-durability-verify': {},
 } as const;
 
 export function pilotMockupifyDryRun() {
@@ -56,7 +58,7 @@ export function pilotMockupifyDryRun() {
       'Verify the Mockupify connection to the exact Shopify shop and exclusive batch control.',
       'Verify Shopify sales-channel read access and document the Hextom rule and safe interval for the entire test.',
       'Record separate operation-specific owner approvals and an export safety margin for a permitted time.',
-      'Establish durable storage across environment replacement and test restoration and cutover for the journal and binding registry.',
+      'Verify the existing SQLite database and backup location, then rehearse recovery and cutover for the journal and binding registry.',
     ],
     externalIds: { batchId: null, designId: null, exportId: null, shopifyProductGid: null },
   };
@@ -82,6 +84,18 @@ export async function runMockupifyWriterCommand(command: string, args: string[],
   if (command === 'mockupify-writer-dry-run') {
     if (args.length) throw new WorkerError('CLI_USAGE', 'The dry-run command uses only the offline pilot fixture.');
     return pilotMockupifyDryRun();
+  }
+  if (command === 'mockupify-durability-status' || command === 'mockupify-durability-verify') {
+    const verify = command === 'mockupify-durability-verify';
+    if (args.length !== (verify ? 1 : 0) || (verify && !id)) {
+      throw new WorkerError('CLI_USAGE', 'Run worker help for durability verification usage.');
+    }
+    const store = new Store(databasePath, verify ? { existing: true } : { readOnly: true });
+    try {
+      return verify ? await store.verifyMockupifyDurability(id!) : store.mockupifyDurabilityStatus();
+    } finally {
+      store.close();
+    }
   }
   const validArity = command === 'mockupify-writer-preview' ? args.length === 2 :
     command === 'mockupify-writer-reconcile' ? args.length === 1 || args.length === 2 : args.length === 1;

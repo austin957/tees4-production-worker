@@ -48,6 +48,8 @@ const help = `Tees-4 Production Worker
   mockupify-writer-preview <correlation-id> <create_batch|upload_design|start_export>
   mockupify-writer-reconcile <correlation-id> [recovery-attestation.json]
   mockupify-writer-backup <new-backup-path>
+  mockupify-durability-status
+  mockupify-durability-verify <existing-backup-directory>
   mockupify-prepare <preparation.json> <approved-mappings.json> <review.png> [--save]
   mockupify-plan <artwork-sku> <mapping.json>
     [--sheet-fixture <rows.json> | --header-row <number> --garment-header <name>]

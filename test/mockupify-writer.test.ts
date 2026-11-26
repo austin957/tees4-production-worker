@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -164,6 +164,46 @@ test('dry-run, wrong or expired approval, and unverified durability prevent all 
   assert.deepEqual(api.posts, []);
   assert.deepEqual(store.getMockupifyJournal(id).claims, {});
   assert.equal(realFetch.mock.callCount(), 0);
+});
+
+test('durability lost after claiming a production operation still prevents sending it', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'tees4-admission-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  using opened = new DisposableStack();
+  const store = opened.adopt(new Store(join(directory, 'worker.sqlite')), value => value.close());
+  const api = new FakeMockupify();
+  const row = api.rows[0]!;
+  const headers = ['Artwork Name(From Google Drive)', 'Product Title', 'Product Description', 'Vendor', 'Product',
+    'Colors', 'Tags', 'Product SKU', 'Tees-4 Completed', '', 'Artwork SKU'];
+  const cells = [row.sheetArtworkName, row.title, row.description, row.vendor, row.garment, row.rawColors,
+    row.tags, row.productSku, '', '', row.artworkSku];
+  t.mock.method(GoogleAuth.prototype, 'getClient', async () => ({
+    request: async () => ({ data: { values: [headers, ...Array.from({ length: row.sourceRow - 2 }, () => []), cells] } }),
+  }));
+  const transport = t.mock.method(globalThis, 'fetch', async (url: URL, init: RequestInit) => {
+    assert.equal(init.method, 'GET');
+    const fixtures = new URL(url.pathname + url.search, 'https://mockupify.invalid');
+    return api.fetch(fixtures, { ...init, headers: { authorization: 'Bearer mockupify-simulation' } });
+  });
+  const writer = api.writer(store, 'production');
+  const journal = await writer.prepare(input, review, png);
+  const id = journal.plan.correlation.correlationId;
+  const approval = api.approve(store, id, 'create_batch');
+  const verified = await store.verifyMockupifyDurability(directory);
+  const claim = store.claimMockupifyOperation.bind(store);
+  const claimed = t.mock.method(store, 'claimMockupifyOperation', (...args: Parameters<typeof claim>) => {
+    const result = claim(...args);
+    writeFileSync(verified.backupPath, 'corrupted after claim');
+    return result;
+  });
+
+  await assert.rejects(writer.dispatch(id, 'create_batch', approval), { code: 'MOCKUPIFY_DURABLE_STORAGE_REQUIRED' });
+  assert.equal(claimed.mock.callCount(), 1);
+  assert.ok(transport.mock.calls.every(call => call.arguments[1]?.method === 'GET'));
+  assert.deepEqual(api.posts, []);
+  const state = store.inspectMockupifyJournal(id);
+  assert.deepEqual(state.journal.claims, {});
+  assert.deepEqual(state.history.at(-1), { event: 'aborted_before_send', operation: 'create_batch', at: api.now });
 });
 
 test('all three documented requests are claimed before dispatch and validated evidence leaves binding review separate', async t => {

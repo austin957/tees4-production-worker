@@ -317,9 +317,12 @@ export class SupervisedMockupifyWriter {
     const preview = previewMockupifyOperation(journal, operation);
     const reviewedApproval = structuredClone(approval);
     assertApproval(reviewedApproval, operation, preview.approvalDigest, this.clock());
-    if (this.mode === 'production' && !this.options.store.hasVerifiedMockupifyDurability()) {
-      stop('MOCKUPIFY_DURABLE_STORAGE_REQUIRED', 'Production requires verified durable journal and binding storage with tested restoration.');
-    }
+    const checkDurability = () => {
+      if (this.mode === 'production' && !this.options.store.hasVerifiedMockupifyDurability()) {
+        stop('MOCKUPIFY_DURABLE_STORAGE_REQUIRED', 'Production requires verified durable journal and binding storage with tested restoration.');
+      }
+    };
+    checkDurability();
     if (plan.mode !== this.mode) stop('MOCKUPIFY_MODE_MISMATCH', 'The journal and dispatch mode must match.');
     assertReview(plan.source, plan.review);
     const checkWindow = () => {
@@ -368,6 +371,7 @@ export class SupervisedMockupifyWriter {
     let saved: MockupifyJournal;
     let exportAcknowledgment: ExportEvidence | undefined;
     try {
+      checkDurability();
       checkWindow();
       assertApproval(reviewedApproval, operation, preview.approvalDigest, this.clock());
     } catch (error) {
