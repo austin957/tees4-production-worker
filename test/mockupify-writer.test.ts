@@ -411,6 +411,58 @@ test('all three documented requests are claimed before dispatch and validated ev
   assert.deepEqual(store.listProductBindings(), []);
 });
 
+test('export reconciliation requires all 14 observed Mockupify initial SKUs and their exact options', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  api.designId = 70253;
+  const sizes = ['X-Small', 'Small', 'Medium', 'Large', 'X-Large', '2X-Large', '3X-Large'];
+  for (const color of api.catalog.find(template => template.id === 10779)!.colors) {
+    color.sizes = sizes;
+    color.price = '18.99';
+  }
+  const variants = ['Black', 'White'].flatMap(Color => sizes.map(Size => ({ options: { Color, Size }, price: '18.99' })));
+  const initialSkus = [
+    '70253-Black-X-Small', '70253-Black-Small', '70253-Black-Medium', '70253-Black-Large',
+    '70253-Black-X-Large', '70253-Black-2X-Large', '70253-Black-3X-Large',
+    '70253-White-X-Small', '70253-White-Small', '70253-White-Medium', '70253-White-Large',
+    '70253-White-X-Large', '70253-White-2X-Large', '70253-White-3X-Large',
+  ];
+  api.shopifyVariants = variants;
+  api.shopifySkus = initialSkus;
+  const writer = api.writer(store);
+  const id = (await writer.prepare(input, { ...review, product: { ...review.product, variants } }, png)).plan.correlation.correlationId;
+  for (const operation of mockupifyOperations) {
+    await writer.dispatch(id, operation, api.approve(store, id, operation), png);
+  }
+  api.finish();
+  const verified = await writer.reconcile(id);
+  assert.equal(verified.exportStatus, 'validated_for_binding_review');
+  assert.equal(verified.shopifyProductGid, productGid);
+  assert.partialDeepStrictEqual(store.inspectMockupifyJournal(id).history.at(-1), {
+    verified: [{ snapshot: { variants: initialSkus.map(sku => ({ sku })) } }],
+  });
+
+  for (const wrong of [
+    null, '', '70254-Black-X-Small', '70253-black-X-Small', '70253-Black-X-small',
+    '70253-Black-Small', '000123-S105', '000123-S105-Black-X-Small', '70253-Black-X-Small-Black-X-Small',
+  ]) {
+    api.shopifySkus = [wrong, ...initialSkus.slice(1)];
+    const held = await writer.reconcile(id);
+    assert.equal(held.exportStatus, 'held', String(wrong));
+    assert.equal(held.shopifyProductGid, null);
+  }
+  api.shopifySkus = initialSkus;
+  api.shopifyVariants = variants.slice(0, -1);
+  assert.equal((await writer.reconcile(id)).exportStatus, 'held');
+  api.shopifyVariants = variants;
+  api.exports[0]!.products[0]!.design.id = 70254;
+  api.shopifySkus = initialSkus.map(sku => sku.replace(/^70253-/, '70254-'));
+  assert.equal((await writer.reconcile(id)).exportStatus, 'held');
+  assert.deepEqual(store.getMockupifyJournal(id).claims, verified.claims);
+  assert.deepEqual(api.posts, ['/api/batches/', '/api/designs/', '/api/exports/']);
+});
+
 test('timeout after export dispatch holds the POST and reconciles partial Shopify output by explicit IDs', async t => {
   const store = new Store(':memory:');
   t.after(() => store.close());
@@ -957,8 +1009,18 @@ test('the pilot stays held on missing publication evidence or after the verified
   assert.equal((await writer.reconcile(id)).exportStatus, 'held');
   api.includePublicationEvidence = true;
   assert.equal((await writer.reconcile(id)).exportStatus, 'validated_for_binding_review');
+  const inside = store.inspectMockupifyJournal(id).history.at(-1);
   api.now = review.publicationSafety.endsAt;
-  assert.equal((await writer.reconcile(id)).exportStatus, 'held');
+  const expired = await writer.reconcile(id);
+  assert.equal(expired.exportStatus, 'held');
+  assert.equal(expired.shopifyProductGid, null);
+  assert.deepEqual(expired.observedProductGids, [productGid]);
+  const { history } = store.inspectMockupifyJournal(id);
+  assert.partialDeepStrictEqual(history.at(-1), {
+    issue: 'MOCKUPIFY_PUBLICATION_WINDOW', withinPublicationWindow: false, ready: false,
+    verified: [{ gid: productGid, metadataMatches: true }],
+  });
+  assert.ok(history.some(event => JSON.stringify(event) === JSON.stringify(inside)));
   const detail = api.exports[0]!;
   detail.status = 'exporting';
   detail.products = [];

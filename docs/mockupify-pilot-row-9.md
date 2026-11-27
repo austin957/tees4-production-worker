@@ -1,6 +1,6 @@
 # Row 9 supervised pilot preflight
 
-Phase 21B cleared the Shopify publication read-access blocker. Phase 21D confirms the configured Hextom schedule timezone. The run-history display timezone and a safe interval for the pilot remain unverified. The `pending_review` pilot already has acknowledged batch `6135` and design `70253`. The [supervised CLI](mockupify-writer.md#finalize-export-review) records the remaining export review against those claims. Dispatch requires durable storage and separate export approval.
+The owner verified that batch `6135`, design `70253`, and finished export `20208` produced Shopify product `gid://shopify/Product/10467506880803`. The initial variant SKUs use the design ID, exact color, and exact size, such as `70253-Black-Small`. Use [read-only reconciliation](mockupify-writer.md#recovery-and-binding-review) with the existing journal. If the recorded test interval has ended, use the separate owner binding review with the saved original observations and fresh evidence.
 
 ## Owner approval record
 

@@ -162,17 +162,22 @@ function assertDesign(design: DesignEvidence, plan: SupervisedMockupifyPlan, bat
   }
 }
 
-function checkProduct(product: ProductRead | null, gid: string, plan: SupervisedMockupifyPlan, createdAt: string,
+function checkProduct(product: ProductRead | null, gid: string, plan: SupervisedMockupifyPlan, designId: number, createdAt: string,
   descriptionMatches: boolean): boolean {
   if (!product || product.id !== gid || product.status !== 'ACTIVE' || product.status !== plan.review.product.status ||
     product.publishedAt !== null || product.hasSalesChannelPublication !== false) return false;
   const expected = plan.review.product;
   if (expected.variants === null) return false;
+  const skus = new Set<string>();
   const variants = product.variants.map(variant => {
     const entries = variant.selectedOptions.map(option => [option.name, option.value] as const);
-    if (!variant.id || (variant.sku !== '' && variant.sku !== null) || !variant.price ||
+    if (!variant.id || !variant.price ||
       !/^\d+(?:\.\d{1,2})?$/.test(variant.price) || new Set(entries.map(([name]) => name)).size !== entries.length) return null;
-    return mockupifyDigest({ options: Object.fromEntries(entries), price: decimal(variant.price) });
+    const options = Object.fromEntries(entries);
+    const { Color, Size } = options;
+    if (!nonblank(Color) || !nonblank(Size) || variant.sku !== `${designId}-${Color}-${Size}` || skus.has(variant.sku)) return null;
+    skus.add(variant.sku);
+    return mockupifyDigest({ options, price: decimal(variant.price) });
   }).sort();
   const expectedVariants = expected.variants.map(variant =>
     mockupifyDigest({ options: variant.options, price: decimal(variant.price) })).sort();
@@ -669,8 +674,9 @@ export class SupervisedMockupifyWriter {
           const initialDescriptionMatches = typeof html === 'string' && (review.expectedInitialDescription ?
             hasUploadedDescriptionReview(review) && matchesInitialDescription(html, review.expectedInitialDescription.text) :
             html === review.product.descriptionHtml);
-          verified.push({ gid, initialDescriptionMatches,
-            metadataMatches: checkProduct(shopify, gid, journal.plan, detail.created, initialDescriptionMatches), snapshot: shopify });
+          verified.push({ gid, initialDescriptionMatches, snapshot: shopify,
+            metadataMatches: authoritative && entry?.shopifyProductGid === gid &&
+              checkProduct(shopify, gid, journal.plan, entry.design.id, detail.created, initialDescriptionMatches) });
         } catch (error) {
           publicationObserved ||= error instanceof WorkerError && error.code === 'SHOPIFY_PUBLICATION_CHANGED';
           verified.push({ gid, metadataMatches: false, snapshot: null,
@@ -686,11 +692,12 @@ export class SupervisedMockupifyWriter {
     }
     const gid = entry?.shopifyProductGid;
     const now = this.clock();
-    const withinWindow = withinPublicationWindow(journal.plan, now);
+    const withinWindow = withinPublicationWindow(journal.plan, observedAt) && withinPublicationWindow(journal.plan, now);
     const ready = withinWindow && !publicationObserved && authoritative && detail.status === 'finished' && detail.errors.length === 0 &&
       entry?.status === 'created' && sameColors(entry.colorIds, selected) && !!gid && gids.length === 1 &&
       verified.length === 1 && verified[0]!.gid === gid && verified[0]!.metadataMatches;
-    const event = { event: 'shopify_reconciliation', at: now, shop, verified, withinPublicationWindow: withinWindow, publicationObserved, ready };
+    const event = { event: 'shopify_reconciliation', at: now, shop, verified, withinPublicationWindow: withinWindow,
+      ...(!withinWindow ? { issue: 'MOCKUPIFY_PUBLICATION_WINDOW' } : {}), publicationObserved, ready };
     if (publicationObserved) {
       return this.options.store.holdMockupifyPublication(journal.plan.correlation.correlationId, event);
     }

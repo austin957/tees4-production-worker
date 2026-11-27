@@ -74,6 +74,9 @@ export class FakeMockupify {
   designs: { id: number; title: string; batch: number; batch_name: string; design_id: string; created: string }[] = [];
   exports: ReturnType<FakeMockupify['makeExport']>[] = [];
   expectedDesign = review.design;
+  designId = 72;
+  shopifyVariants = review.product.variants;
+  shopifySkus?: (string | null)[];
   afterPost?: (path: string, data: unknown) => Promise<void>;
   beforeRead?: (path: string) => void;
   responseOverride?: (path: string) => Response | undefined;
@@ -96,8 +99,10 @@ export class FakeMockupify {
             id, title: review.product.title, descriptionHtml: review.product.descriptionHtml, vendor: review.product.vendor,
             status: 'ACTIVE', ...(this.includePublicationEvidence ? { hasSalesChannelPublication: false } : {}), tags: review.product.tags, handle: 'fixture', productType: '', publishedAt: null,
             createdAt: new Date(this.now).toISOString(), updatedAt: new Date(this.now).toISOString(), options: [],
-            variants: review.product.variants.map((variant, index) => ({
-              id: `gid://shopify/ProductVariant/${index + 8}`, sku: null, price: variant.price,
+            variants: this.shopifyVariants.map((variant, index) => ({
+              id: `gid://shopify/ProductVariant/${index + 8}`,
+              sku: this.shopifySkus ? this.shopifySkus[index] ?? null : `${this.designId}-${variant.options.Color}-${variant.options.Size}`,
+              price: variant.price,
               selectedOptions: Object.entries(variant.options).map(([name, value]) => ({ name, value })),
             })),
             ...this.productOverride,
@@ -179,7 +184,7 @@ export class FakeMockupify {
       for (const [key, value] of Object.entries(this.expectedDesign)) assert.equal(fields[key], value);
       const batch = this.batches.find(item => String(item.id) === fields.batch)!;
       batch.designs_count++;
-      data = { ...fields, id: 72, batch: batch.id, batch_name: batch.name, created: new Date(this.now).toISOString() };
+      data = { ...fields, id: this.designId, batch: batch.id, batch_name: batch.name, created: new Date(this.now).toISOString() };
       this.designs.push(data as FakeMockupify['designs'][number]);
     } else if (path === '/api/exports/') {
       assert.equal(this.requests.at(-2), 'GET /api/designs/');
