@@ -7,7 +7,7 @@ import { integer, object, onlyKeys } from './config.js';
 import { databaseIdentity, durabilityStatus, sqliteBackupTo, verifyDurability } from './mockupify-durability.js';
 import type { GarmentCompletionTarget, SheetsCompletionAdapter } from './garment-completion.js';
 import type { MockupifyPreparationRecord } from './mockupify-preparation.js';
-import { mockupifyDigest, unresolvedMockupifyReview } from './mockupify-writer-model.js';
+import { assertMockupifyOperationReview, mockupifyDigest, unresolvedMockupifyReview } from './mockupify-writer-model.js';
 import type { MockupifyClaim, MockupifyJournal, SupervisedMockupifyPlan } from './mockupify-writer-model.js';
 import { parseExportEvidence } from './mockupify.js';
 import type { ExportJob, ExportPlan } from './mockupify.js';
@@ -165,13 +165,35 @@ export class Store {
     });
   }
 
-  finalizeMockupifyPlan(plan: SupervisedMockupifyPlan, at: number): MockupifyJournal {
+  recordMockupifyBatchReview(journal: MockupifyJournal, evidence: string, at: number): MockupifyJournal {
+    return this.transaction(() => {
+      const current = this.getMockupifyJournal(journal.plan.correlation.correlationId);
+      const { plan } = current;
+      const recorded = plan.review.exclusiveBatchControlEvidence;
+      if (current.revision !== journal.revision || current.registrationState !== 'pending_review' ||
+        Object.keys(current.claims).length || (recorded !== null && recorded !== evidence)) {
+        throw new WorkerError('MOCKUPIFY_BATCH_REVIEW_CONFLICT', 'Batch review cannot replace recorded evidence or change a claimed plan.');
+      }
+      if (!evidence.trim()) {
+        throw new WorkerError('MOCKUPIFY_PENDING_REVIEW', 'Supply verified exclusive batch control evidence.');
+      }
+      this.assertMockupifyBindingClear(plan);
+      if (recorded === evidence) return current;
+      return this.saveMockupifyJournal({
+        ...current, plan: { ...plan, review: { ...plan.review, exclusiveBatchControlEvidence: evidence } },
+      }, { event: 'batch_review_recorded', at, exclusiveBatchControlEvidence: evidence });
+    });
+  }
+
+  finalizeMockupifyPlan(plan: SupervisedMockupifyPlan, at: number, revision: number): MockupifyJournal {
     return this.transaction(() => {
       const current = this.getMockupifyJournal(plan.correlation.correlationId);
-      if (current.registrationState !== 'pending_review' || Object.keys(current.claims).length ||
-        current.batchId !== null || current.designId !== null || current.exportId !== null ||
+      if (current.revision !== revision || current.registrationState !== 'pending_review' || current.claims.start_export ||
+        Object.values(current.claims).some(claim => claim.state !== 'acknowledged' && claim.state !== 'recovered') ||
+        (current.batchId !== null) !== !!current.claims.create_batch ||
+        (current.designId !== null) !== !!current.claims.upload_design || current.exportId !== null ||
         current.exportStatus !== 'unobserved' || current.observedProductGids.length) {
-        throw new WorkerError('MOCKUPIFY_FINALIZATION_CONFLICT', 'Only an untouched pending-review plan can be finalized.');
+        throw new WorkerError('MOCKUPIFY_FINALIZATION_CONFLICT', 'Only a pending plan with settled batch and design claims can be finalized.');
       }
       if (unresolvedMockupifyReview(plan.review).length) {
         throw new WorkerError('MOCKUPIFY_FINALIZATION_EVIDENCE', 'Finalization requires all outstanding review evidence.');
@@ -235,12 +257,10 @@ export class Store {
     return this.transaction(() => {
       const operation = claim.request.operation;
       const current = this.getMockupifyJournal(journal.plan.correlation.correlationId);
-      if (current.registrationState === 'pending_review') {
-        throw new WorkerError('MOCKUPIFY_PENDING_REVIEW', 'A pending-review plan cannot claim a POST.');
-      }
       if (current.revision !== journal.revision || current.claims[operation]) {
         throw new WorkerError('MOCKUPIFY_ALREADY_CLAIMED', 'An existing claim or journal change requires inspection before dispatch.');
       }
+      assertMockupifyOperationReview(current, operation);
       this.assertMockupifyBindingClear(current.plan);
       const newExport = operation === 'start_export';
       if (newExport) {

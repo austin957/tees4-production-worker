@@ -30,26 +30,25 @@ Supply these fields in the separate metadata-review JSON. For pending registrati
 | `design` | Exact strings for `title`, `description`, `extra_title`, `search_tags`, `vendor`, and `extra_price`. The pilot uses an empty `extra_title`, `Family, Grandpa`, `test test` and `0.00`. Use the reviewed artwork copy and include the designer attribution in the description. |
 | `shop` | `id` and `domain` for the approved shop, with independent `connectionEvidence` linking the Mockupify account to it |
 | `product` | Exact expected Shopify `title`, initial `descriptionHtml` including attribution, `vendor`, and `status` of `ACTIVE`. See the [pilot description evidence](mockupify-pilot-row-9.md#initial-and-hextom-enhanced-descriptions). Set the `tags` array to exactly `readytobuy`, `adult`, `S105`, `adjust`, `stock`, `Family`, and `Grandpa` in any order, with each tag listed once. Provide `variants` as all 14 reviewed entries, each with an `options` object mapping exact option names to strings and a `price` string. Catalog color prices alone cannot establish final Shopify variant prices. |
-| `initialDescriptionEvidence` | Reference to the trusted record supporting the exact initial Shopify HTML. Required when finalizing a pending plan. |
+| `initialDescriptionEvidence` | Reference to the trusted record supporting the exact initial Shopify HTML. Required for export review. |
 | `exclusiveBatchControlEvidence` | Evidence that this pilot has exclusive control of its isolated batch through export completion |
 | `publicationSafety` | Verified Hextom rule and safety `evidence`, interval `startsAt` and `endsAt` as Unix epoch milliseconds, and the required `minimumMinutes` for completing the export and observations |
 
-Template 10779 contributes `adjust` to the expected Shopify tags. The design upload uses `Family, Grandpa`. The template tag makes the Active product potentially eligible for Hextom publication, and the pilot still needs a verified safe interval. The complete plan, including its publication-safety interval, is bound into each operation's digest. Inspect it and review the exact preview before requesting approval. If the plan conflicts with an existing registration, stop and inspect the journal. The CLI has no plan replacement or claim reset command.
+Template 10779 contributes `adjust` to the expected Shopify tags. The design upload uses `Family, Grandpa`. The template tag makes the Active product potentially eligible for Hextom publication, so export needs a verified safe interval. Each approval digest binds the plan as it exists at preview time. If the plan gains evidence before a POST is claimed, obtain approval against a fresh preview. The CLI preserves recorded evidence and operation claims.
 
-### Finalize the pending plan
+### Record batch control for the pending pilot
 
-A pending plan reserves the pilot correlation in the same SQLite journal. It produces no operation approval digest and cannot claim or dispatch any POST. Readiness uses the local journal, clock, configured export margin, and SQLite durability evidence. It lists live requirements separately because a local report cannot confirm remote batch or publication state or authenticate an owner approval.
+Use the existing database and correlation ID. Create a UTF-8 `batch-review.json` with one property, `exclusiveBatchControlEvidence`. Its value is the reference to the verified record establishing exclusive control of the isolated batch through export completion. The command rechecks the recorded source, catalog and Shopify shop, checks for a batch or design collision and an active binding, and adds the evidence to the existing journal. The registration stays `pending_review` while export review is outstanding.
 
-Once the missing evidence is available, copy the pending review to `metadata-review.json` and fill the unresolved values. Use the same preparation JSON and PNG. Finalization rechecks the source, artwork digest, catalog, collisions, and Shopify shop through the existing read paths. It validates the supplied metadata and verifies that the recorded publication interval has enough time left. The exact HTML and Hextom evidence still rely on the operator’s trusted records. Finalization commits a one-way state transition in SQLite, preserving the original recorded values, history and correlation. Existing claims and registered full plans cannot be replaced. Already complete evidence can still be registered directly using the original `mockupify-writer-register` command.
+An empty batch can now be previewed for separate owner approval. After the batch is confirmed, upload requires the exact recorded design review and PNG bytes plus its own owner approval. Readiness reports the evidence and timing still needed for each operation. It does not perform provider reads or grant approval.
 
 ```powershell
-npm.cmd run --silent worker -- mockupify-writer-finalize '.\preparation.json' '.\review.png' '.\metadata-review.json'
+npm.cmd run --silent worker -- mockupify-writer-review-batch $correlationId '.\batch-review.json'
 npm.cmd run --silent worker -- mockupify-writer-readiness $correlationId
-npm.cmd run --silent worker -- mockupify-durability-status
 npm.cmd run --silent worker -- mockupify-writer-preview $correlationId create_batch
 ```
 
-Use `npm.cmd run --silent worker -- mockupify-durability-verify $backupDirectory` if the durability evidence for that database is missing or expired. The finalized plan carries no owner authorizations.
+Use `npm.cmd run --silent worker -- mockupify-durability-verify $backupDirectory` if the durability evidence for that database is missing or expired.
 
 ### Dispatch one operation
 
@@ -60,11 +59,21 @@ npm.cmd run --silent worker -- mockupify-writer-dispatch $correlationId create_b
 npm.cmd run --silent worker -- mockupify-writer-reconcile $correlationId
 ```
 
-When separately authorized, use the following operation-specific commands. Preview upload after the journal has a verified batch ID. Preview export after it also has a verified design ID. Set `TEES4_MOCKUPIFY_EXPORT_MARGIN_MINUTES` to the approved positive integer margin before export.
+Preview upload after the journal has a verified batch ID. Obtain separate owner approval before dispatch.
 
 ```powershell
 npm.cmd run --silent worker -- mockupify-writer-preview $correlationId upload_design
 npm.cmd run --silent worker -- mockupify-writer-dispatch $correlationId upload_design --execute '.\upload-approval.json' '.\review.png'
+```
+
+### Finalize export review
+
+Copy the original review to `metadata-review.json` and fill the outstanding fields, including the same exclusive batch control evidence already recorded. Supply the same preparation JSON and PNG. Finalization rechecks the source, artwork digest, catalog, Shopify shop, any previously recorded batch and design, and the time remaining in the verified Hextom-safe interval. Settle any uncertain batch or upload claim through reconciliation before finalizing. Finalization preserves the correlation, prior evidence and settled claims. A new pilot with complete evidence can also use `mockupify-writer-register`.
+
+Set `TEES4_MOCKUPIFY_EXPORT_MARGIN_MINUTES` to the approved positive integer margin before export. Preview the export after the journal has a verified batch and design ID, then obtain separate approval for that digest before dispatch.
+
+```powershell
+npm.cmd run --silent worker -- mockupify-writer-finalize '.\preparation.json' '.\review.png' '.\metadata-review.json'
 npm.cmd run --silent worker -- mockupify-writer-preview $correlationId start_export
 npm.cmd run --silent worker -- mockupify-writer-dispatch $correlationId start_export --execute '.\export-approval.json'
 npm.cmd run --silent worker -- mockupify-writer-reconcile $correlationId

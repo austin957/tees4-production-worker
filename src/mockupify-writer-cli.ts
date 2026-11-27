@@ -15,6 +15,7 @@ export const mockupifyWriterCommands = {
   'mockupify-writer-dry-run': {},
   'mockupify-writer-register': {},
   'mockupify-writer-register-pending': {},
+  'mockupify-writer-review-batch': {},
   'mockupify-writer-finalize': {},
   'mockupify-writer-readiness': {},
   'mockupify-writer-dispatch': { execute: { type: 'boolean' } },
@@ -108,7 +109,6 @@ function operationPreview(store: Store, id: string, operation: MockupifyOperatio
   const preview = previewMockupifyOperation(journal, operation);
   return {
     ...preview, method: 'POST',
-    ...(claim ? { request: claim.request, requestDigest: claim.requestDigest, approvalDigest: claim.approval.digest } : {}),
     claimState: claim?.state ?? null, executionAuthorized: false,
   };
 }
@@ -118,10 +118,9 @@ function operationReadiness(store: Store, id: string, exportMarginMinutes: numbe
   const { plan, claims } = journal;
   const registrationState = journal.registrationState ?? 'finalized';
   const pending = registrationState === 'pending_review';
-  const missingReviewFields = pending ? unresolvedMockupifyReview(plan.review) : [];
+  const missingReviewFields = unresolvedMockupifyReview(plan.review);
   const durability = plan.mode === 'production' ? store.mockupifyDurabilityStatus() : null;
   const common = [
-    ...(pending ? ['FINALIZE_PENDING_REVIEW'] : []),
     ...(durability?.admitted === false ? ['VERIFY_SQLITE_DURABILITY'] : []),
   ];
   const now = Date.now();
@@ -157,6 +156,8 @@ function operationReadiness(store: Store, id: string, exportMarginMinutes: numbe
         claimState: null,
         blockers: [
           ...common,
+          ...(missingReviewFields.includes('exclusiveBatchControlEvidence') ? ['VERIFY_EXCLUSIVE_BATCH_CONTROL'] : []),
+          ...(operation === 'start_export' && (pending || missingReviewFields.length) ? ['FINALIZE_EXPORT_REVIEW'] : []),
           ...(operation !== 'create_batch' && journal.batchId === null ? ['VERIFY_ISOLATED_BATCH'] : []),
           ...(operation === 'start_export' && journal.designId === null ? ['VERIFY_UPLOADED_DESIGN'] : []),
           ...(operation === 'start_export' ? exportBlockers : []),
@@ -196,6 +197,24 @@ export async function runMockupifyWriterCommand(
     }
   }
   const env = process.env;
+  if (command === 'mockupify-writer-review-batch') {
+    if (args.length !== 2 || !id || !argument) {
+      throw new WorkerError('CLI_USAGE', 'Supply the registered correlation ID and the batch-review JSON.');
+    }
+    const review = object(readJson(argument, 'Batch review'), 'Batch review');
+    onlyKeys(review, ['exclusiveBatchControlEvidence'], 'Batch review');
+    const evidence = requiredText(review.exclusiveBatchControlEvidence, 'Exclusive batch control evidence');
+    const store = new Store(databasePath, { existing: true });
+    try {
+      const writer = new SupervisedMockupifyWriter({
+        store, env, mode: 'production', shopify: new ShopifyReadonlyClient(shopifyExportReadConfig(env)),
+        validatePlan: assertMockupifyPilotPlan,
+      });
+      return await writer.reviewBatch(id, evidence);
+    } finally {
+      store.close();
+    }
+  }
   const pending = command === 'mockupify-writer-register-pending';
   const finalize = command === 'mockupify-writer-finalize';
   if (command === 'mockupify-writer-register' || pending || finalize) {

@@ -7,7 +7,7 @@ import {
   parseBatch, parseDesignEvidence, parseExportDetail,
 } from './mockupify-readonly.js';
 import { mockupifyCorrelation, parseMockupifyPreparationInput, prepareMockupifyExport, readApprovedMockupifyConfig } from './mockupify-preparation.js';
-import { mockupifyDigest, sha256, unresolvedMockupifyReview } from './mockupify-writer-model.js';
+import { assertMockupifyOperationReview, mockupifyDigest, sha256, unresolvedMockupifyReview } from './mockupify-writer-model.js';
 import type {
   MockupifyApproval, MockupifyClaim, MockupifyJournal, MockupifyOperation, MockupifyPost,
   MockupifyReviewInput, SupervisedMockupifyPlan, SupervisedSourceRow,
@@ -95,9 +95,11 @@ function assertReview(source: SupervisedSourceRow, review: MockupifyReviewInput,
 }
 
 export function previewMockupifyOperation(journal: MockupifyJournal, operation: MockupifyOperation) {
-  if (journal.registrationState === 'pending_review') {
-    stop('MOCKUPIFY_PENDING_REVIEW', 'Finalize the pending plan before previewing or approving a POST.');
-  }
+  const expectedSideEffects = expectedEffects[operation];
+  const claim = journal.claims[operation];
+  if (claim) return { request: claim.request, requestDigest: claim.requestDigest,
+    approvalDigest: claim.approval.digest, expectedSideEffects };
+  assertMockupifyOperationReview(journal, operation);
   const { plan, batchId, designId } = journal;
   const { correlation } = plan;
   let request: MockupifyPost;
@@ -120,7 +122,6 @@ export function previewMockupifyOperation(journal: MockupifyJournal, operation: 
     default: return stop('MOCKUPIFY_OPERATION', 'Unknown supervised Mockupify operation.');
   }
   const requestDigest = mockupifyDigest({ method: 'POST', request });
-  const expectedSideEffects = expectedEffects[operation];
   const approvalDigest = mockupifyDigest({ plan, requestDigest, batchId, designId, expectedSideEffects });
   return { request, requestDigest, expectedSideEffects, approvalDigest };
 }
@@ -253,9 +254,11 @@ export class SupervisedMockupifyWriter {
     registration?: 'pending_review' | 'finalize'): Promise<MockupifyJournal> {
     if (this.mode === 'dry_run') stop('MOCKUPIFY_DRY_RUN', 'Dry-run mode does not register a dispatchable plan.');
     const prepared = parseMockupifyPreparationInput(input);
-    if (registration === 'finalize') {
-      const { correlationId } = mockupifyCorrelation(prepared.source.spreadsheetId, prepared.source.productSku);
-      if (this.options.store.getMockupifyJournal(correlationId).registrationState !== 'pending_review') {
+    const { correlationId } = mockupifyCorrelation(prepared.source.spreadsheetId, prepared.source.productSku);
+    const current = registration === 'finalize' ? this.options.store.getMockupifyJournal(correlationId) : undefined;
+    if (current) {
+      if (current.registrationState !== 'pending_review' || current.plan.mode !== this.mode || current.claims.start_export ||
+        Object.values(current.claims).some(claim => claim.state !== 'acknowledged' && claim.state !== 'recovered')) {
         stop('MOCKUPIFY_FINALIZATION_CONFLICT', 'Only an existing pending-review plan can be finalized.');
       }
     }
@@ -265,7 +268,7 @@ export class SupervisedMockupifyWriter {
       stop('MOCKUPIFY_SOURCE_CHANGED', 'The supplied preparation does not match the current physical row.');
     }
     const reviewed = structuredClone(review);
-    if (registration === 'finalize') {
+    if (registration !== 'pending_review') {
       const missing = unresolvedMockupifyReview(reviewed);
       if (missing.length) stop('MOCKUPIFY_FINALIZATION_EVIDENCE', `Supply the remaining evidence for ${missing.join(', ')}.`);
     }
@@ -274,14 +277,18 @@ export class SupervisedMockupifyWriter {
       !nonblank(reviewed.initialDescriptionEvidence)) {
       stop('MOCKUPIFY_FINALIZATION_EVIDENCE', 'Record the evidence reference for the exact initial Shopify HTML.');
     }
+    if (current && current.batchId !== null) await this.confirmBatch(current, current.designId === null ? 0 : 1);
     const approved = readApprovedMockupifyConfig();
     const catalog = await this.reads.listProducts();
-    const batches = await this.reads.listBatches();
+    const batches = (await this.reads.listBatches()).filter(batch =>
+      batch.id !== current?.batchId || batch.name !== current.plan.correlation.batchName);
     const designs = await this.reads.listDesigns();
     const report = prepareMockupifyExport(approved, prepared, png, {
       catalog, batches, batchDesigns: designs.filter(design => design.batchId === approved.config.observedBatch.id),
       bindings: this.options.store.listProductBindings(),
-    }, designs.map(design => design.designReference));
+    }, designs.filter(design => design.id !== current?.designId || design.batchId !== current.batchId ||
+      design.designReference !== current.plan.correlation.designReference)
+      .map(design => design.designReference));
     const template = catalog.find(entry => entry.id === report.correlation.mockupifyTemplateId)!;
     const selectedColors = prepared.colors.map(color => template.colors.find(entry => entry.id === color.mockupifyColorId)!);
     const plan = { mode: this.mode, correlation: report.correlation, source, review: reviewed,
@@ -290,14 +297,32 @@ export class SupervisedMockupifyWriter {
     this.options.validatePlan?.(plan);
     await this.verifyShop(plan);
     const now = this.clock();
-    if (registration === 'finalize') {
+    if (current) {
       const safety = publicationSafety(plan);
       if (!safety || safety.endsAt - Math.max(now, safety.startsAt) <= safety.minimumMinutes * 60_000) {
         stop('MOCKUPIFY_PUBLICATION_WINDOW', 'The verified Hextom-safe interval has too little time left to finalize this pilot.');
       }
-      return this.options.store.finalizeMockupifyPlan(plan, now);
+      return this.options.store.finalizeMockupifyPlan(plan, now, current.revision);
     }
     return this.options.store.registerMockupifyPlan(plan, registration === 'pending_review' ? now : undefined);
+  }
+
+  async reviewBatch(id: string, evidence: string): Promise<MockupifyJournal> {
+    if (this.mode === 'dry_run') stop('MOCKUPIFY_DRY_RUN', 'Dry-run mode does not record batch review.');
+    const journal = this.options.store.getMockupifyJournal(id);
+    const { plan } = journal;
+    if (journal.registrationState !== 'pending_review' || plan.mode !== this.mode || Object.keys(journal.claims).length ||
+      (plan.review.exclusiveBatchControlEvidence !== null && plan.review.exclusiveBatchControlEvidence !== evidence)) {
+      stop('MOCKUPIFY_BATCH_REVIEW_CONFLICT', 'Batch review requires an unclaimed pending plan and preserves any recorded evidence.');
+    }
+    if (!nonblank(evidence)) stop('MOCKUPIFY_PENDING_REVIEW', 'Supply verified exclusive batch control evidence.');
+    const review = { ...plan.review, exclusiveBatchControlEvidence: evidence };
+    assertReview(plan.source, review, true);
+    this.options.validatePlan?.({ ...plan, review });
+    await this.verifyPlanSource(plan);
+    await this.verifyCatalog(plan);
+    await this.confirmNewBatch(plan);
+    return this.options.store.recordMockupifyBatchReview(journal, evidence, this.clock());
   }
 
   private async verifyPlanSource(plan: SupervisedMockupifyPlan) {
@@ -341,6 +366,13 @@ export class SupervisedMockupifyWriter {
     return batchId;
   }
 
+  private async confirmNewBatch(plan: SupervisedMockupifyPlan): Promise<void> {
+    if ((await this.reads.listBatches()).some(batch => batch.name === plan.correlation.batchName) ||
+      (await this.reads.listDesigns()).some(design => design.designReference === plan.correlation.designReference)) {
+      stop('MOCKUPIFY_RECONCILIATION_REQUIRED', 'The correlation is already visible in Mockupify.');
+    }
+  }
+
   async dispatch(id: string, operation: MockupifyOperation, approval?: MockupifyApproval, png?: Uint8Array): Promise<MockupifyJournal> {
     if (this.mode === 'dry_run') stop('MOCKUPIFY_DRY_RUN', 'Dry-run mode bypasses all POST requests.');
     const journal = this.options.store.getMockupifyJournal(id);
@@ -356,7 +388,7 @@ export class SupervisedMockupifyWriter {
     };
     checkDurability();
     if (plan.mode !== this.mode) stop('MOCKUPIFY_MODE_MISMATCH', 'The journal and dispatch mode must match.');
-    assertReview(plan.source, plan.review);
+    assertReview(plan.source, plan.review, operation !== 'start_export');
     this.options.validatePlan?.(plan);
     const checkWindow = () => {
       if (operation !== 'start_export') return;
@@ -376,10 +408,7 @@ export class SupervisedMockupifyWriter {
     await this.verifyCatalog(plan);
     let remoteActive: number[] = [];
     if (operation === 'create_batch') {
-      if ((await this.reads.listBatches()).some(batch => batch.name === plan.correlation.batchName) ||
-        (await this.reads.listDesigns()).some(design => design.designReference === plan.correlation.designReference)) {
-        stop('MOCKUPIFY_RECONCILIATION_REQUIRED', 'The correlation is already visible in Mockupify.');
-      }
+      await this.confirmNewBatch(plan);
     } else if (operation === 'start_export') {
       await this.options.shopify.verifyExportPublicationAccess();
       const exports = await this.reads.listExports();

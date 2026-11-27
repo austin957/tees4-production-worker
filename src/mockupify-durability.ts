@@ -150,7 +150,8 @@ function checkProbe(db: DatabaseSync, nonce: string, startedAt: number) {
   const journal = db.prepare('SELECT * FROM mockupify_writer_journal').all();
   const events = db.prepare('SELECT * FROM mockupify_writer_events').all();
   const claim = { ...probeClaim(nonce, startedAt), budgetSequence: 1 };
-  const expected = { plan: { correlation: { correlationId: nonce, productSku: nonce, spreadsheetId: nonce, sourceRow: 2 } },
+  const expected = { plan: { correlation: { correlationId: nonce, productSku: nonce, spreadsheetId: nonce, sourceRow: 2 },
+    review: { exclusiveBatchControlEvidence: nonce } },
     revision: 1, batchId: null, designId: null, exportId: null, claims: { create_batch: claim } };
   if (journal.length !== 1 || journal[0]?.correlation_id !== nonce || journal[0]?.product_sku !== nonce ||
     journal[0]?.body !== JSON.stringify(expected) || events.length !== 1 || events[0]?.correlation_id !== nonce ||
@@ -172,7 +173,8 @@ function recoverProbe(path: string, nonce: string, startedAt: number) {
     const seed = new DatabaseSync(path);
     seed.prepare('INSERT INTO mockupify_writer_journal (correlation_id, product_sku, body) VALUES (?, ?, ?)')
       .run(nonce, nonce, JSON.stringify({
-        plan: { correlation: { correlationId: nonce, productSku: nonce, spreadsheetId: nonce, sourceRow: 2 } },
+        plan: { correlation: { correlationId: nonce, productSku: nonce, spreadsheetId: nonce, sourceRow: 2 },
+          review: { exclusiveBatchControlEvidence: nonce } },
         revision: 0, batchId: null, designId: null, exportId: null, claims: {},
       }));
     seed.close();

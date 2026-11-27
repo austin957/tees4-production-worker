@@ -9,16 +9,20 @@ import { readMasterInputSupervisedRows } from '../src/google-sheets.js';
 import { pilotMockupifyDryRun } from '../src/mockupify-writer-cli.js';
 import { previewMockupifyOperation } from '../src/mockupify-writer.js';
 import { mockupifyOperations } from '../src/mockupify-writer-model.js';
+import type { MockupifyClaim } from '../src/mockupify-writer-model.js';
 import { WorkerError } from '../src/model.js';
 import { Store } from '../src/store.js';
 import { FakeMockupify, initialTime, input, png, prepare, productGid, readyToExport, review, shop } from './mockupify-writer-fixture.js';
+
+const { initialDescriptionEvidence: _initialHtmlEvidence, ...reviewWithoutHtmlEvidence } = review;
 
 test('pending review preserves supplied evidence and blocks previews, dispatch and durable claims', async t => {
   const store = new Store(':memory:');
   t.after(() => store.close());
   const api = new FakeMockupify();
   const writer = api.writer(store);
-  const draft = { ...review, product: { ...review.product, descriptionHtml: null }, publicationSafety: null };
+  const draft = { ...reviewWithoutHtmlEvidence, product: { ...review.product, descriptionHtml: null },
+    publicationSafety: null, exclusiveBatchControlEvidence: null };
   const journal = await writer.prepare(input, draft, png, 'pending_review');
   const id = journal.plan.correlation.correlationId;
   assert.equal(journal.registrationState, 'pending_review');
@@ -46,7 +50,7 @@ test('pending review preserves supplied evidence and blocks previews, dispatch a
   assert.deepEqual(store.getMockupifyJournal(id), journal);
   assert.deepEqual(store.inspectMockupifyJournal(id).history, [{
     event: 'pending_review_registered', at: api.now,
-    unresolved: ['product.descriptionHtml', 'initialDescriptionEvidence', 'publicationSafety'],
+    unresolved: ['product.descriptionHtml', 'initialDescriptionEvidence', 'publicationSafety', 'exclusiveBatchControlEvidence'],
   }]);
 });
 
@@ -55,12 +59,12 @@ test('finalization fills only missing evidence and keeps owner authorization sep
   t.after(() => store.close());
   const api = new FakeMockupify();
   const writer = api.writer(store);
-  const draft = { ...review, product: { ...review.product, descriptionHtml: null }, publicationSafety: null };
+  const draft = { ...reviewWithoutHtmlEvidence, product: { ...review.product, descriptionHtml: null }, publicationSafety: null };
   const journal = await writer.prepare(input, draft, png, 'pending_review');
   const id = journal.plan.correlation.correlationId;
   const complete = { ...review, initialDescriptionEvidence: 'Fixture exact prior Shopify HTML record' };
 
-  await assert.rejects(writer.prepare(input, review, png, 'finalize'), { code: 'MOCKUPIFY_FINALIZATION_EVIDENCE' });
+  await assert.rejects(writer.prepare(input, reviewWithoutHtmlEvidence, png, 'finalize'), { code: 'MOCKUPIFY_FINALIZATION_EVIDENCE' });
   await assert.rejects(writer.prepare(input, { ...complete, product: { ...review.product, descriptionHtml: '<p>Wrong</p>' } }, png, 'finalize'),
     { code: 'MOCKUPIFY_REVIEW_REQUIRED' });
   await assert.rejects(writer.prepare(input, { ...complete, publicationSafety: { ...review.publicationSafety, evidence: ' ' } }, png, 'finalize'),
@@ -97,6 +101,87 @@ test('finalization fills only missing evidence and keeps owner authorization sep
   await assert.rejects(writer.prepare(input, complete, png, 'finalize'), { code: 'MOCKUPIFY_FINALIZATION_CONFLICT' });
   assert.deepEqual(store.inspectMockupifyJournal(id), claimed);
   assert.deepEqual(api.posts, ['/api/batches/', '/api/designs/', '/api/exports/']);
+});
+
+test('batch and exact design can be dispatched separately while incomplete export review blocks every claim path', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const writer = api.writer(store);
+  const draft = { ...reviewWithoutHtmlEvidence, product: { ...review.product, descriptionHtml: null, variants: null },
+    publicationSafety: null, exclusiveBatchControlEvidence: null };
+  const pending = await writer.prepare(input, draft, png, 'pending_review');
+  const id = pending.plan.correlation.correlationId;
+  const evidence = review.exclusiveBatchControlEvidence;
+
+  api.batches.push({ id: 70, name: pending.plan.correlation.batchName, designs_count: 0 });
+  await assert.rejects(writer.reviewBatch(id, evidence), { code: 'MOCKUPIFY_RECONCILIATION_REQUIRED' });
+  assert.deepEqual(store.getMockupifyJournal(id), pending);
+  api.batches.pop();
+  const batchReady = await writer.reviewBatch(id, evidence);
+  assert.deepEqual(batchReady, {
+    ...pending, revision: pending.revision + 1,
+    plan: { ...pending.plan, review: { ...draft, exclusiveBatchControlEvidence: evidence } },
+  });
+  assert.deepEqual(await writer.reviewBatch(id, evidence), batchReady);
+  await assert.rejects(writer.reviewBatch(id, 'Different evidence'), { code: 'MOCKUPIFY_BATCH_REVIEW_CONFLICT' });
+  await assert.rejects(writer.dispatch(id, 'create_batch'), { code: 'MOCKUPIFY_APPROVAL_REQUIRED' });
+  assert.deepEqual(api.posts, []);
+
+  const batchApproval = api.approve(store, id, 'create_batch');
+  await writer.dispatch(id, 'create_batch', batchApproval);
+  await assert.rejects(writer.dispatch(id, 'upload_design', batchApproval, png), { code: 'MOCKUPIFY_APPROVAL_REQUIRED' });
+  const uploadApproval = api.approve(store, id, 'upload_design');
+  await assert.rejects(writer.dispatch(id, 'upload_design', uploadApproval, Buffer.from('wrong bytes')),
+    { code: 'MOCKUPIFY_PNG_EVIDENCE_MISMATCH' });
+  api.afterPost = async path => {
+    assert.equal(path, '/api/designs/');
+    await assert.rejects(writer.prepare(input, review, png, 'finalize'), { code: 'MOCKUPIFY_FINALIZATION_CONFLICT' });
+  };
+  const uploaded = await writer.dispatch(id, 'upload_design', uploadApproval, png);
+  delete api.afterPost;
+  assert.equal(uploaded.registrationState, 'pending_review');
+  assert.equal(uploaded.designId, 72);
+
+  // Compute an approval from a complete copy to exercise both gates even with an export-specific approval.
+  const exportPreview = previewMockupifyOperation({
+    ...uploaded, registrationState: 'finalized', plan: { ...uploaded.plan, review },
+  }, 'start_export');
+  const approval = { ...uploadApproval, operation: 'start_export' as const, digest: exportPreview.approvalDigest };
+  const claim: MockupifyClaim = {
+    request: exportPreview.request, requestDigest: exportPreview.requestDigest, approval,
+    claimedAt: api.now, designId: uploaded.designId, state: 'dispatching',
+  };
+  assert.throws(() => previewMockupifyOperation(uploaded, 'start_export'), { code: 'MOCKUPIFY_PENDING_REVIEW' });
+  await assert.rejects(writer.dispatch(id, 'start_export', approval), { code: 'MOCKUPIFY_PENDING_REVIEW' });
+  assert.throws(() => store.claimMockupifyOperation(uploaded, claim, [], () => assert.fail('Export reached claim preflight')),
+    { code: 'MOCKUPIFY_PENDING_REVIEW' });
+  for (const incomplete of [
+    reviewWithoutHtmlEvidence,
+    { ...review, product: { ...review.product, descriptionHtml: null } },
+    { ...review, product: { ...review.product, variants: null } },
+    { ...review, publicationSafety: null },
+  ]) {
+    await assert.rejects(writer.prepare(input, incomplete, png, 'finalize'), { code: 'MOCKUPIFY_FINALIZATION_EVIDENCE' });
+    assert.throws(() => previewMockupifyOperation({
+      ...uploaded, registrationState: 'finalized', plan: { ...uploaded.plan, review: incomplete },
+    }, 'start_export'), { code: 'MOCKUPIFY_PENDING_REVIEW' });
+  }
+  assert.deepEqual(store.getMockupifyJournal(id), uploaded);
+  assert.deepEqual(api.posts, ['/api/batches/', '/api/designs/']);
+
+  const before = store.inspectMockupifyJournal(id);
+  const finalized = await writer.prepare(input, review, png, 'finalize');
+  assert.equal(finalized.registrationState, 'finalized');
+  assert.equal(finalized.batchId, uploaded.batchId);
+  assert.equal(finalized.designId, uploaded.designId);
+  assert.deepEqual(finalized.claims, uploaded.claims);
+  assert.equal(previewMockupifyOperation(finalized, 'create_batch').approvalDigest, batchApproval.digest);
+  assert.equal(previewMockupifyOperation(finalized, 'upload_design').approvalDigest, uploadApproval.digest);
+  assert.deepEqual(store.inspectMockupifyJournal(id).history.slice(0, -1), before.history);
+  await assert.rejects(writer.dispatch(id, 'start_export', uploadApproval), { code: 'MOCKUPIFY_APPROVAL_REQUIRED' });
+  const exported = await writer.dispatch(id, 'start_export', api.approve(store, id, 'start_export'));
+  assert.equal(exported.claims.start_export?.state, 'acknowledged');
 });
 
 test('the offline pilot dry run identifies row 9 and preserves the source artwork name and Shopify title', () => {

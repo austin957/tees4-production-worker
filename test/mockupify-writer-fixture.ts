@@ -26,6 +26,7 @@ export const review: MockupifyReview = {
     ],
   },
   exclusiveBatchControlEvidence: 'Fixture operator lock',
+  initialDescriptionEvidence: 'Fixture exact prior Shopify HTML record',
   publicationSafety: {
     evidence: 'Fixture verified interval before any eligible Hextom run', startsAt: initialTime - 60_000,
     endsAt: initialTime + 2 * 60 * 60_000, minimumMinutes: 15,

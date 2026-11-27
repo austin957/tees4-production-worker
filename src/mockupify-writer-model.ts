@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { MockupifyPreparationRecord, parseMockupifyPreparationInput } from './mockupify-preparation.js';
+import { WorkerError } from './model.js';
 
 export const mockupifyOperations = ['create_batch', 'upload_design', 'start_export'] as const;
 export type MockupifyOperation = typeof mockupifyOperations[number];
@@ -61,15 +62,27 @@ export type MockupifyReviewInput = Omit<MockupifyReview, 'product' | 'publicatio
   publicationSafety: MockupifyReview['publicationSafety'] | null;
 };
 
-export function unresolvedMockupifyReview(review: MockupifyReviewInput): string[] {
+export function unresolvedMockupifyReview(review: MockupifyReviewInput, operation: MockupifyOperation = 'start_export'): string[] {
   const missing: string[] = [];
-  if (review.product.descriptionHtml === null) missing.push('product.descriptionHtml');
-  if (!review.initialDescriptionEvidence?.trim()) missing.push('initialDescriptionEvidence');
-  if (review.publicationSafety === null) missing.push('publicationSafety');
-  if (review.product.title === null) missing.push('product.title');
-  if (review.product.variants === null) missing.push('product.variants');
-  if (review.exclusiveBatchControlEvidence === null) missing.push('exclusiveBatchControlEvidence');
+  if (operation === 'start_export') {
+    if (!review.product.descriptionHtml?.trim()) missing.push('product.descriptionHtml');
+    if (!review.initialDescriptionEvidence?.trim()) missing.push('initialDescriptionEvidence');
+    if (!review.publicationSafety) missing.push('publicationSafety');
+    if (!review.product.title?.trim()) missing.push('product.title');
+    if (!review.product.variants?.length) missing.push('product.variants');
+  }
+  if (!review.exclusiveBatchControlEvidence?.trim()) missing.push('exclusiveBatchControlEvidence');
   return missing;
+}
+
+export function assertMockupifyOperationReview(journal: MockupifyJournal, operation: MockupifyOperation): void {
+  const missing = unresolvedMockupifyReview(journal.plan.review, operation);
+  if (missing.length) {
+    throw new WorkerError('MOCKUPIFY_PENDING_REVIEW', `Supply verified evidence for ${missing.join(', ')} before ${operation}.`);
+  }
+  if (operation === 'start_export' && journal.registrationState === 'pending_review') {
+    throw new WorkerError('MOCKUPIFY_PENDING_REVIEW', 'Finalize the Shopify export review before approving or claiming an export.');
+  }
 }
 
 export interface SupervisedMockupifyPlan {

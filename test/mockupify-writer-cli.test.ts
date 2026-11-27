@@ -71,7 +71,8 @@ function pilotFixture() {
 test('pending CLI accepts explicit unresolved values and reports operation blockers without modifying SQLite', async t => {
   const { database, json, artwork } = localFiles(t);
   const { metadata, preparation } = pilotFixture();
-  const draft = { ...metadata, product: { ...metadata.product, descriptionHtml: null, title: null, variants: null },
+  const { initialDescriptionEvidence: _metadataEvidence, ...partialMetadata } = metadata;
+  const draft = { ...partialMetadata, product: { ...metadata.product, descriptionHtml: null, title: null, variants: null },
     publicationSafety: null, exclusiveBatchControlEvidence: null };
   const files = [json('preparation.json', preparation), artwork, json('pending review.json', draft)];
   await assert.rejects(runMockupifyWriterCommand('mockupify-writer-register-pending', files, database),
@@ -80,8 +81,9 @@ test('pending CLI accepts explicit unresolved values and reports operation block
 
   const store = new Store(database);
   try {
+    const { initialDescriptionEvidence: _fixtureEvidence, ...partialReview } = review;
     const pending = await new FakeMockupify().writer(store).prepare(input, {
-      ...review, product: { ...review.product, descriptionHtml: null, title: null, variants: null },
+      ...partialReview, product: { ...review.product, descriptionHtml: null, title: null, variants: null },
       publicationSafety: null, exclusiveBatchControlEvidence: null,
     }, png, 'pending_review');
     const id = pending.plan.correlation.correlationId;
@@ -98,9 +100,11 @@ test('pending CLI accepts explicit unresolved values and reports operation block
       'exclusiveBatchControlEvidence',
     ]);
     for (const operation of mockupifyOperations) {
-      assert.ok(readiness.operations[operation].blockers.includes('FINALIZE_PENDING_REVIEW'));
+      assert.ok(readiness.operations[operation].blockers.includes('VERIFY_EXCLUSIVE_BATCH_CONTROL'));
       assert.ok(readiness.operations[operation].requiredAtDispatch.includes('FRESH_OPERATION_SPECIFIC_OWNER_APPROVAL'));
     }
+    assert.deepEqual(readiness.operations.create_batch.blockers, ['VERIFY_EXCLUSIVE_BATCH_CONTROL']);
+    assert.ok(readiness.operations.start_export.blockers.includes('FINALIZE_EXPORT_REVIEW'));
     assert.ok(readiness.operations.upload_design.blockers.includes('VERIFY_ISOLATED_BATCH'));
     assert.ok(readiness.operations.start_export.blockers.includes('VERIFY_UPLOADED_DESIGN'));
     assert.ok(readiness.operations.start_export.blockers.includes('SUPPLY_HEXTOM_SAFE_INTERVAL'));
@@ -179,7 +183,7 @@ test('registration requires the exact combined Shopify tags while preserving the
     { code: 'MOCKUPIFY_PNG_EVIDENCE_MISMATCH' });
 });
 
-test('production CLI requires a separate unexpired approval, durable storage and a fresh source before one batch claim', async t => {
+test('production CLI stages an existing pilot and requires separate approval, durable storage and fresh source before claiming a batch', async t => {
   const { directory, database, json, artwork } = localFiles(t);
   t.mock.property(mockupifyPilot, 'pngSha256', input.png.preparedSha256);
   const { api, source, correlation, metadata, preparation } = pilotFixture();
@@ -235,20 +239,21 @@ test('production CLI requires a separate unexpired approval, durable storage and
   const preparationPath = json('preparation.json', preparation);
   const register = (command: string, value: unknown) => runMockupifyWriterCommand(command,
     [preparationPath, artwork, json('metadata review.json', value)], database);
+  const { initialDescriptionEvidence: _metadataEvidence, ...partialMetadata } = metadata;
   const pending = await register('mockupify-writer-register-pending', {
-    ...metadata, product: { ...metadata.product, title: null, descriptionHtml: null, variants: null },
+    ...partialMetadata, product: { ...metadata.product, descriptionHtml: null, variants: null },
     exclusiveBatchControlEvidence: null, publicationSafety: null,
   });
   assert.ok(pending && 'registrationState' in pending);
   assert.equal(pending.registrationState, 'pending_review');
-  const now = Date.now();
-  const finalized = await register('mockupify-writer-finalize', {
-    ...metadata, initialDescriptionEvidence: 'Synthetic exact HTML record',
-    publicationSafety: { ...metadata.publicationSafety, startsAt: now, endsAt: now + 3_600_000 },
-  });
-  assert.ok(finalized && 'claims' in finalized);
-  assert.equal(finalized.registrationState, 'finalized');
-  assert.deepEqual(finalized.claims, {});
+  const batchReview = (value: unknown) => runMockupifyWriterCommand('mockupify-writer-review-batch',
+    [id, json('batch review.json', value)], database);
+  await assert.rejects(batchReview({ exclusiveBatchControlEvidence: ' ' }), { code: 'INVALID_INPUT' });
+  const staged = await batchReview({ exclusiveBatchControlEvidence: metadata.exclusiveBatchControlEvidence });
+  assert.ok(staged && 'claims' in staged);
+  assert.equal(staged.registrationState, 'pending_review');
+  assert.equal(staged.plan.review.product.descriptionHtml, null);
+  assert.deepEqual(staged.claims, {});
   assert.deepEqual(api.posts, []);
   currentDescription = 'Stale fixture description';
   fetch.mock.resetCalls();
@@ -285,6 +290,7 @@ test('production CLI requires a separate unexpired approval, durable storage and
   assert.equal(readiness.durability?.admitted, true);
   assert.deepEqual(readiness.operations.create_batch?.blockers, []);
   assert.deepEqual(readiness.operations.upload_design?.blockers, ['VERIFY_ISOLATED_BATCH']);
+  assert.ok(readiness.operations.start_export?.blockers.includes('FINALIZE_EXPORT_REVIEW'));
   assert.equal(fetch.mock.callCount(), 0);
   assert.equal(auth.mock.callCount(), 0);
   await assert.rejects(dispatch(['create_batch', validPath]), { code: 'MOCKUPIFY_SOURCE_CHANGED' });

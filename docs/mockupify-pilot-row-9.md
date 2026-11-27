@@ -1,6 +1,6 @@
 # Row 9 supervised pilot preflight
 
-Phase 21B cleared the Shopify publication read-access blocker. Phase 21D confirms the configured Hextom schedule timezone. The run-history display timezone and a safe interval for the pilot remain unverified. The [supervised CLI](mockupify-writer.md#windows-powershell) can register the pilot as `pending_review` with the verified artwork, source and catalog. Finalization requires a complete review and verified Hextom-safe interval. Dispatch also requires durable storage and operation-specific approval.
+Phase 21B cleared the Shopify publication read-access blocker. Phase 21D confirms the configured Hextom schedule timezone. The run-history display timezone and a safe interval for the pilot remain unverified. The pilot is registered as `pending_review` with the verified artwork, source and catalog. The [supervised CLI](mockupify-writer.md#windows-powershell) can record batch control evidence and later finalize the complete export review. Dispatch requires durable storage and operation-specific approval.
 
 ## Owner approval record
 
@@ -65,31 +65,31 @@ The task publishes qualifying products to Online Store, Facebook & Instagram, Sh
 
 The configured **7:00 PM America/Chicago** run falls within the protected window. The run-history display timezone remains unverified. Approximately **6:00 PM as shown in the run history** is the earliest displayed start among the supplied entries. The difference between the displayed times remains unexplained, and the earliest possible future execution is still unverified. For dispatch planning, treat exposure as possible as soon as the exported product qualifies. A queued or running eligible task could publish it before the first Shopify read.
 
-Before any future dispatch, use read-only evidence to confirm the run-history display timezone, reconcile the historical starts with the configured schedule, and check for queued or running instances. Verify the earliest eligible run and record a safe interval with explicit start and end times and the minimum time needed for export and observation. The entire test must finish before any eligible publication run. Hold if timing, eligibility, or the full interval remains unverified. Keep the Hextom task enabled with its existing configuration. Separately, the daily protected window remains **4:20 PM inclusive to 9:10 PM exclusive America/Chicago**, with the configured export safety margin before cutoff. [Hextom scheduled tasks](https://bpe-help-center.hextom.com/article/732-tutorials-on-using-scheduled-tasks-bpe)
+Before dispatching an export, use read-only evidence to confirm the run-history display timezone, reconcile the historical starts with the configured schedule, and check for queued or running instances. Verify the earliest eligible run and record a safe interval with explicit start and end times and the minimum time needed for export and observation. The export and observations must finish before any eligible publication run. Hold the export if timing, eligibility, or the full interval remains unverified. Keep the Hextom task enabled with its existing configuration. Separately, the daily protected window remains **4:20 PM inclusive to 9:10 PM exclusive America/Chicago**, with the configured export safety margin before cutoff. [Hextom scheduled tasks](https://bpe-help-center.hextom.com/article/732-tutorials-on-using-scheduled-tasks-bpe)
 
 Read the APP publication connection for the exact exported Shopify Product GID immediately after export, during the supervised test, and again before the verified interval ends. Include current and staged publications. Hold if any are observed, publication evidence is unavailable, or the interval expires before completion. An empty publication read describes only that moment. Confirm the product's disposition with the owner before any separately authorized cleanup.
 
 ## Pending registration and operation requirements
 
-Use `mockupify-writer-register-pending` to record the verified facts and reviewed values in SQLite, then `mockupify-writer-readiness` to list the remaining requirements. The current missing evidence includes the raw initial Shopify HTML and its evidence reference, and the verified Hextom-safe interval. Leave the expected Shopify title, final variant details or exclusive batch control evidence null as well if they are unconfirmed. Finalize to make the following operations individually eligible for approval.
+Use `mockupify-writer-readiness` with the existing pilot correlation to list the remaining requirements. Use `mockupify-writer-review-batch` to record verified exclusive batch control evidence. Finalize the pending export review when the exact initial Shopify HTML and supporting record, all other Shopify metadata, and the Hextom-safe interval are available.
 
 | Operation | Requirements before dispatch |
 | --- | --- |
-| `create_batch` | Finalized plan, current durability admission, fresh source, catalog, shop and binding checks, no existing batch or design correlation, quota, and owner approval for the exact batch request |
-| `upload_design` | Finalized plan, current durability admission, verified empty isolated batch, exact reviewed PNG and upload metadata, fresh checks and quota, and separate owner approval |
-| `start_export` | Finalized plan, current durability admission, exactly one verified design in the exclusive batch, no existing export, fresh Shopify publication read access, available export capacity and quota, a verified Hextom-safe interval and configured margin outside the protected hours, and separate owner approval |
+| `create_batch` | Verified exclusive batch control, current durability admission, fresh source, catalog, shop and binding checks, no existing batch or design correlation, quota, and owner approval for the exact batch request |
+| `upload_design` | Current durability admission, verified empty exclusive batch, exact reviewed PNG and upload metadata, fresh checks and quota, and separate owner approval |
+| `start_export` | Finalized Shopify metadata and publication review, current durability admission, exactly one verified design in the exclusive batch, no existing export, fresh Shopify publication read access, available export capacity and quota, a verified Hextom-safe interval and configured margin outside the protected hours, and separate owner approval |
 
 ## Operation previews
 
-Use the [supervised writer](mockupify-writer.md) to register the complete plan and preview the exact request, expected side effects, current journal IDs and approval digest. The examples below show the expected request shapes. Nulls denote unresolved values. Where design metadata is incomplete, obtain explicit approval for all six design fields before generating any operation approval digest. The batch request itself already has a stable request digest.
+Use the [supervised writer](mockupify-writer.md) to preview the exact request, expected side effects, current journal IDs and approval digest for each operation once its review evidence is recorded. The examples below show the expected request shapes. Nulls denote unresolved values. The batch request has a stable request digest.
 
 ### A · Create the isolated batch
 
 `POST /api/batches/` with JSON `{"name":"tees4-6b7ffdea53cc1985343b375aabac5d5c"}`.
 
 - Effect. One empty Mockupify batch reserved for this Product SKU.
-- Request digest. `a3895291c65b4fd5d0e20db5e7e2f5fc81c3c7c8a12d94964ceeb2ce26d34dcd`. Operation approval digest is pending the complete verified plan.
-- Preconditions. Verified artwork bytes and full pilot evidence, healthy authoritative source reads, durable journal and binding storage, and separate owner authorization. Check that no matching correlation already exists and that the binding registry is clear.
+- Request digest. `a3895291c65b4fd5d0e20db5e7e2f5fc81c3c7c8a12d94964ceeb2ce26d34dcd`. Preview the approval digest after recording exclusive batch control evidence.
+- Preconditions. Recorded pilot source, artwork, catalog and shop checks, verified exclusive batch control, healthy authoritative reads, durable journal and binding storage, and separate owner authorization. Check that no matching correlation already exists and that the binding registry is clear.
 - Recovery. Read batches and membership. Require exactly one attributable batch and prove it is empty. An independent attestation of ownership and dispatcher termination is required for an uncertain acknowledgment. Preserve the original claim.
 
 ### B · Upload the approved PNG
