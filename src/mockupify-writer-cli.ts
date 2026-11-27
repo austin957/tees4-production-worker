@@ -1,6 +1,9 @@
 import { object, integer, onlyKeys, readJson, requiredText } from './config.js';
 import { assertMockupifyPng, mockupifyCorrelation, readApprovedMockupifyConfig, readMockupifyPng } from './mockupify-preparation.js';
-import { assertMockupifyPilotPlan, assertMockupifyPilotReview, mockupifyPilot, parseMockupifyReview } from './mockupify-pilot.js';
+import {
+  assertMockupifyPilotPlan, assertMockupifyPilotReview, mockupifyPilot, parseMockupifyExportReview, parseMockupifyReview,
+  projectMockupifyPilotProduct,
+} from './mockupify-pilot.js';
 import { mockupifyOperations, unresolvedMockupifyReview } from './mockupify-writer-model.js';
 import type { MockupifyApproval, MockupifyOperation } from './mockupify-writer-model.js';
 import { previewMockupifyOperation, SupervisedMockupifyWriter } from './mockupify-writer.js';
@@ -16,6 +19,7 @@ export const mockupifyWriterCommands = {
   'mockupify-writer-register': {},
   'mockupify-writer-register-pending': {},
   'mockupify-writer-review-batch': {},
+  'mockupify-writer-review-export': {},
   'mockupify-writer-finalize': {},
   'mockupify-writer-readiness': {},
   'mockupify-writer-dispatch': { execute: { type: 'boolean' } },
@@ -101,6 +105,12 @@ function readApproval(path: string): MockupifyApproval {
     evidence: requiredText(value.evidence, 'Owner approval evidence'),
     expiresAt: integer(value.expiresAt, 'Owner approval expiresAt', 1, Number.MAX_SAFE_INTEGER),
   };
+}
+
+function batchControlEvidence(value: unknown): string {
+  const review = object(value, 'Batch review');
+  onlyKeys(review, ['exclusiveBatchControlEvidence'], 'Batch review');
+  return requiredText(review.exclusiveBatchControlEvidence, 'Exclusive batch control evidence');
 }
 
 function operationPreview(store: Store, id: string, operation: MockupifyOperation) {
@@ -197,20 +207,21 @@ export async function runMockupifyWriterCommand(
     }
   }
   const env = process.env;
-  if (command === 'mockupify-writer-review-batch') {
+  const reviewBatch = command === 'mockupify-writer-review-batch';
+  if (reviewBatch || command === 'mockupify-writer-review-export') {
     if (args.length !== 2 || !id || !argument) {
-      throw new WorkerError('CLI_USAGE', 'Supply the registered correlation ID and the batch-review JSON.');
+      throw new WorkerError('CLI_USAGE', 'Supply the registered correlation ID and the operation review JSON.');
     }
-    const review = object(readJson(argument, 'Batch review'), 'Batch review');
-    onlyKeys(review, ['exclusiveBatchControlEvidence'], 'Batch review');
-    const evidence = requiredText(review.exclusiveBatchControlEvidence, 'Exclusive batch control evidence');
+    const input = readJson(argument, 'Operation review');
+    const evidence = reviewBatch ? batchControlEvidence(input) : parseMockupifyExportReview(input);
     const store = new Store(databasePath, { existing: true });
     try {
       const writer = new SupervisedMockupifyWriter({
         store, env, mode: 'production', shopify: new ShopifyReadonlyClient(shopifyExportReadConfig(env)),
         validatePlan: assertMockupifyPilotPlan,
       });
-      return await writer.reviewBatch(id, evidence);
+      return typeof evidence === 'string' ? await writer.reviewBatch(id, evidence) :
+        await writer.reviewExport(id, evidence, projectMockupifyPilotProduct);
     } finally {
       store.close();
     }

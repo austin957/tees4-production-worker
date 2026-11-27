@@ -2,14 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { WorkerError } from './model.js';
 import { readMasterInputSupervisedRows } from './google-sheets.js';
+import { matchesInitialDescription } from './mockupify-description.js';
 import {
   mockupifyOrigin, mockupifyReadOnly, mockupifyRetryDelay,
   parseBatch, parseDesignEvidence, parseExportDetail,
 } from './mockupify-readonly.js';
 import { mockupifyCorrelation, parseMockupifyPreparationInput, prepareMockupifyExport, readApprovedMockupifyConfig } from './mockupify-preparation.js';
-import { assertMockupifyOperationReview, mockupifyDigest, sha256, unresolvedMockupifyReview } from './mockupify-writer-model.js';
+import { assertMockupifyOperationReview, hasUploadedDescriptionReview, mockupifyDigest, sha256, unresolvedMockupifyReview } from './mockupify-writer-model.js';
 import type {
-  MockupifyApproval, MockupifyClaim, MockupifyJournal, MockupifyOperation, MockupifyPost,
+  MockupifyApproval, MockupifyClaim, MockupifyExportReviewInput, MockupifyJournal, MockupifyOperation, MockupifyPost,
   MockupifyReviewInput, SupervisedMockupifyPlan, SupervisedSourceRow,
 } from './mockupify-writer-model.js';
 import { assertExportWindow } from './production-schedule.js';
@@ -57,6 +58,13 @@ function withinPublicationWindow(plan: SupervisedMockupifyPlan, now: number) {
   return !!safety && now >= safety.startsAt && now < safety.endsAt;
 }
 
+function assertFinalizationWindow(plan: SupervisedMockupifyPlan, now: number) {
+  const safety = publicationSafety(plan);
+  if (!safety || safety.endsAt - Math.max(now, safety.startsAt) <= safety.minimumMinutes * 60_000) {
+    stop('MOCKUPIFY_PUBLICATION_WINDOW', 'The verified Hextom-safe interval has too little time left to finalize this pilot.');
+  }
+}
+
 function assertReview(source: SupervisedSourceRow, review: MockupifyReviewInput, pending = false) {
   const { design, product, shop } = review;
   if (!nonblank(source.vendor) || design.vendor !== source.vendor || product.vendor !== source.vendor) {
@@ -76,7 +84,8 @@ function assertReview(source: SupervisedSourceRow, review: MockupifyReviewInput,
       value.length <= 255 && !value.includes('\u0000')) &&
     nonblank(design.title) && design.description.includes(review.designerAttribution) &&
     !design.search_tags.split(',').some(tag => tag.trim() === 'adjust') && /^-?\d{1,8}(?:\.\d{1,2})?$/.test(design.extra_price);
-  const validDescription = pending && product.descriptionHtml === null ||
+  const validDescription = review.expectedInitialDescription ? hasUploadedDescriptionReview(review) :
+    pending && product.descriptionHtml === null ||
     typeof product.descriptionHtml === 'string' && product.descriptionHtml.includes(review.designerAttribution);
   const variants = product.variants;
   const validVariants = pending && variants === null || Array.isArray(variants) && variants.length > 0 &&
@@ -153,7 +162,8 @@ function assertDesign(design: DesignEvidence, plan: SupervisedMockupifyPlan, bat
   }
 }
 
-function checkProduct(product: ProductRead | null, gid: string, plan: SupervisedMockupifyPlan, createdAt: string): boolean {
+function checkProduct(product: ProductRead | null, gid: string, plan: SupervisedMockupifyPlan, createdAt: string,
+  descriptionMatches: boolean): boolean {
   if (!product || product.id !== gid || product.status !== 'ACTIVE' || product.status !== plan.review.product.status ||
     product.publishedAt !== null || product.hasSalesChannelPublication !== false) return false;
   const expected = plan.review.product;
@@ -166,7 +176,7 @@ function checkProduct(product: ProductRead | null, gid: string, plan: Supervised
   }).sort();
   const expectedVariants = expected.variants.map(variant =>
     mockupifyDigest({ options: variant.options, price: decimal(variant.price) })).sort();
-  return product.title === expected.title && product.descriptionHtml === expected.descriptionHtml &&
+  return product.title === expected.title && descriptionMatches &&
     product.vendor === expected.vendor && isDeepStrictEqual([...product.tags].sort(), [...expected.tags].sort()) &&
     new Set(product.variants.map(variant => variant.id)).size === product.variants.length &&
     isDeepStrictEqual(variants, expectedVariants) && Date.parse(product.createdAt) >= Date.parse(createdAt) - 1000;
@@ -298,10 +308,7 @@ export class SupervisedMockupifyWriter {
     await this.verifyShop(plan);
     const now = this.clock();
     if (current) {
-      const safety = publicationSafety(plan);
-      if (!safety || safety.endsAt - Math.max(now, safety.startsAt) <= safety.minimumMinutes * 60_000) {
-        stop('MOCKUPIFY_PUBLICATION_WINDOW', 'The verified Hextom-safe interval has too little time left to finalize this pilot.');
-      }
+      assertFinalizationWindow(plan, now);
       return this.options.store.finalizeMockupifyPlan(plan, now, current.revision);
     }
     return this.options.store.registerMockupifyPlan(plan, registration === 'pending_review' ? now : undefined);
@@ -323,6 +330,42 @@ export class SupervisedMockupifyWriter {
     await this.verifyCatalog(plan);
     await this.confirmNewBatch(plan);
     return this.options.store.recordMockupifyBatchReview(journal, evidence, this.clock());
+  }
+
+  async reviewExport(id: string, evidence: MockupifyExportReviewInput, projectProduct: (plan: SupervisedMockupifyPlan) =>
+    { title: string; variants: NonNullable<MockupifyReviewInput['product']['variants']> }): Promise<MockupifyJournal> {
+    if (this.mode === 'dry_run') stop('MOCKUPIFY_DRY_RUN', 'Dry-run mode does not record export review.');
+    const journal = this.options.store.getMockupifyJournal(id);
+    const settled = (claim?: MockupifyClaim) => claim?.state === 'acknowledged' || claim?.state === 'recovered';
+    const { plan, claims } = journal;
+    if (journal.registrationState !== 'pending_review' || plan.mode !== this.mode || claims.start_export ||
+      journal.batchId === null || journal.designId === null || !settled(claims.create_batch) || !settled(claims.upload_design)) {
+      stop('MOCKUPIFY_FINALIZATION_CONFLICT', 'Export review requires a pending pilot with settled batch and design claims.');
+    }
+    const recorded = plan.review;
+    const projected = projectProduct(plan);
+    const review: MockupifyReviewInput = {
+      ...recorded,
+      product: { ...recorded.product, title: recorded.product.title ?? projected.title,
+        variants: recorded.product.variants ?? projected.variants },
+      expectedInitialDescription: { source: 'uploaded_design_only', text: recorded.design.description,
+        evidence: evidence.descriptionSourceEvidence },
+      variantOptionsEvidence: evidence.variantOptionsEvidence,
+      publicationSafety: structuredClone(evidence.publicationSafety),
+    };
+    const next = { ...plan, review };
+    assertReview(plan.source, review);
+    const missing = unresolvedMockupifyReview(review);
+    if (missing.length) stop('MOCKUPIFY_FINALIZATION_EVIDENCE', `Supply the remaining evidence for ${missing.join(', ')}.`);
+    this.options.validatePlan?.(next);
+    assertFinalizationWindow(next, this.clock());
+    await this.verifyPlanSource(plan);
+    await this.verifyCatalog(plan);
+    await this.options.shopify.verifyExportPublicationAccess();
+    await this.confirmBatch(journal, 1);
+    const now = this.clock();
+    assertFinalizationWindow(next, now);
+    return this.options.store.finalizeMockupifyPlan(next, now, journal.revision);
   }
 
   private async verifyPlanSource(plan: SupervisedMockupifyPlan) {
@@ -608,7 +651,8 @@ export class SupervisedMockupifyWriter {
     const lookups = [...new Set(detail.products.flatMap(row => row.shopifyProductGid ? [row.shopifyProductGid] :
       row.shopifyProductId ? [`gid://shopify/Product/${row.shopifyProductId}`] : []))];
     if (!lookups.length) return observed;
-    const verified: { gid: string; metadataMatches: boolean; snapshot: ProductRead | null; issue?: string }[] = [];
+    const verified: { gid: string; metadataMatches: boolean; initialDescriptionMatches?: boolean;
+      snapshot: ProductRead | null; issue?: string }[] = [];
     let shop;
     let publicationObserved = journal.publicationObserved ?? false;
     try {
@@ -620,7 +664,13 @@ export class SupervisedMockupifyWriter {
             publicationObserved ||= snapshot.hasSalesChannelPublication === true || snapshot.publishedAt !== null;
             return snapshot;
           } }, gid);
-          verified.push({ gid, metadataMatches: checkProduct(shopify, gid, journal.plan, detail.created), snapshot: shopify });
+          const review = journal.plan.review;
+          const html = shopify?.descriptionHtml;
+          const initialDescriptionMatches = typeof html === 'string' && (review.expectedInitialDescription ?
+            hasUploadedDescriptionReview(review) && matchesInitialDescription(html, review.expectedInitialDescription.text) :
+            html === review.product.descriptionHtml);
+          verified.push({ gid, initialDescriptionMatches,
+            metadataMatches: checkProduct(shopify, gid, journal.plan, detail.created, initialDescriptionMatches), snapshot: shopify });
         } catch (error) {
           publicationObserved ||= error instanceof WorkerError && error.code === 'SHOPIFY_PUBLICATION_CHANGED';
           verified.push({ gid, metadataMatches: false, snapshot: null,

@@ -207,6 +207,12 @@ export class Store {
       if (plan.review.initialDescriptionEvidence !== undefined) {
         expected.review.initialDescriptionEvidence ??= plan.review.initialDescriptionEvidence;
       }
+      if (plan.review.expectedInitialDescription !== undefined) {
+        expected.review.expectedInitialDescription ??= plan.review.expectedInitialDescription;
+      }
+      if (plan.review.variantOptionsEvidence !== undefined) {
+        expected.review.variantOptionsEvidence ??= plan.review.variantOptionsEvidence;
+      }
       if (mockupifyDigest(expected) !== mockupifyDigest(plan)) {
         throw new WorkerError('MOCKUPIFY_FINALIZATION_CONFLICT', 'Finalization changed recorded source, artwork, catalog or review values.');
       }

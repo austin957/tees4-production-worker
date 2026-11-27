@@ -1,7 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
 import { integer, object, onlyKeys, requiredText } from './config.js';
+import { normalizeDescriptionText } from './mockupify-description.js';
 import { WorkerError } from './model.js';
-import type { MockupifyReviewInput, SupervisedMockupifyPlan } from './mockupify-writer-model.js';
+import { mockupifyDigest } from './mockupify-writer-model.js';
+import type { MockupifyExportReviewInput, MockupifyReviewInput, SupervisedMockupifyPlan } from './mockupify-writer-model.js';
 import { masterInput } from './sheets.js';
 
 export const mockupifyPilot = {
@@ -18,6 +20,7 @@ export const mockupifyPilot = {
   templateId: 10779,
   colors: [{ name: 'Black', id: 20514 }, { name: 'White', id: 20515 }],
   variantCount: 14,
+  sizes: ['X-Small', 'Small', 'Medium', 'Large', 'X-Large', '2X-Large', '3X-Large'],
   catalogPrice: '18.99',
   shopId: 'gid://shopify/Shop/76973965603',
   shopDomain: '64c645.myshopify.com',
@@ -37,6 +40,25 @@ function exactText(value: unknown, label: string): string {
   return value;
 }
 
+function parsePublicationSafety(value: unknown) {
+  const safety = section(value, ['evidence', 'startsAt', 'endsAt', 'minimumMinutes'], 'Publication safety');
+  return {
+    evidence: requiredText(safety.evidence, 'Publication safety evidence'),
+    startsAt: integer(safety.startsAt, 'Publication safety startsAt', 1, Number.MAX_SAFE_INTEGER),
+    endsAt: integer(safety.endsAt, 'Publication safety endsAt', 1, Number.MAX_SAFE_INTEGER),
+    minimumMinutes: integer(safety.minimumMinutes, 'Publication safety minimumMinutes', 1, Number.MAX_SAFE_INTEGER),
+  };
+}
+
+export function parseMockupifyExportReview(value: unknown): MockupifyExportReviewInput {
+  const fields = section(value, ['descriptionSourceEvidence', 'variantOptionsEvidence', 'publicationSafety'], 'Export review');
+  return {
+    descriptionSourceEvidence: requiredText(fields.descriptionSourceEvidence, 'Blank-template and design-description evidence'),
+    variantOptionsEvidence: requiredText(fields.variantOptionsEvidence, 'Shopify variant option evidence'),
+    publicationSafety: parsePublicationSafety(fields.publicationSafety),
+  };
+}
+
 export function parseMockupifyReview(value: unknown, pending = false): MockupifyReviewInput {
   const review = section(value, [
     'artworkRegistryName', 'artworkNameResolution', 'designerAttribution', 'design', 'shop', 'product',
@@ -46,7 +68,7 @@ export function parseMockupifyReview(value: unknown, pending = false): Mockupify
   const shop = section(review.shop, ['id', 'domain', 'connectionEvidence'], 'Shop review');
   const product = section(review.product, ['title', 'descriptionHtml', 'vendor', 'tags', 'variants', 'status'], 'Product review');
   const safety = pending && review.publicationSafety === null ? null :
-    section(review.publicationSafety, ['evidence', 'startsAt', 'endsAt', 'minimumMinutes'], 'Publication safety');
+    parsePublicationSafety(review.publicationSafety);
   const variants = product.variants;
   if (product.status !== 'ACTIVE' || !Array.isArray(product.tags) || (variants !== null && !Array.isArray(variants)) ||
     (!pending && variants === null)) {
@@ -93,12 +115,7 @@ export function parseMockupifyReview(value: unknown, pending = false): Mockupify
     ...(review.initialDescriptionEvidence === undefined ? {} : {
       initialDescriptionEvidence: requiredText(review.initialDescriptionEvidence, 'Initial Shopify description evidence'),
     }),
-    publicationSafety: safety === null ? null : {
-      evidence: requiredText(safety.evidence, 'Publication safety evidence'),
-      startsAt: integer(safety.startsAt, 'Publication safety startsAt', 1, Number.MAX_SAFE_INTEGER),
-      endsAt: integer(safety.endsAt, 'Publication safety endsAt', 1, Number.MAX_SAFE_INTEGER),
-      minimumMinutes: integer(safety.minimumMinutes, 'Publication safety minimumMinutes', 1, Number.MAX_SAFE_INTEGER),
-    },
+    publicationSafety: safety,
   };
 }
 
@@ -114,6 +131,15 @@ export function assertMockupifyPilotReview(review: MockupifyReviewInput): void {
     shop.id !== pilot.shopId || shop.domain !== pilot.shopDomain) {
     throw new WorkerError('MOCKUPIFY_PILOT_REVIEW_MISMATCH', 'The reviewed metadata must match the exact approved Bold Arrow Emblem pilot.');
   }
+}
+
+export function projectMockupifyPilotProduct(plan: SupervisedMockupifyPlan) {
+  return {
+    title: `${mockupifyPilot.title} ${mockupifyPilot.garment}`,
+    variants: plan.catalogColors.flatMap(color => color.sizes.map(size => ({
+      options: { Color: color.name, Size: size }, price: color.price,
+    }))),
+  };
 }
 
 export function assertMockupifyPilotPlan(plan: SupervisedMockupifyPlan): void {
@@ -140,5 +166,18 @@ export function assertMockupifyPilotPlan(plan: SupervisedMockupifyPlan): void {
   if (combinations.size !== pilot.variantCount ||
     (review.product.variants !== null && !isDeepStrictEqual(reviewedCombinations, combinations))) {
     throw new WorkerError('MOCKUPIFY_PILOT_VARIANTS_MISMATCH', 'Review all 14 distinct catalog color and size combinations with their expected Shopify option names and prices.');
+  }
+  if (!review.expectedInitialDescription) return;
+  const sourceText = normalizeDescriptionText(source.description ?? '');
+  if (!sourceText || normalizeDescriptionText(review.design.description) !== `${sourceText} Designed by ${pilot.attribution}`) {
+    throw new WorkerError('MOCKUPIFY_PILOT_DESCRIPTION_MISMATCH', 'The uploaded description must match the reviewed source copy followed by the pilot attribution.');
+  }
+  const expected = projectMockupifyPilotProduct(plan);
+  if (review.product.title !== expected.title) {
+    throw new WorkerError('MOCKUPIFY_PILOT_REVIEW_MISMATCH', 'The Shopify title must match the approved design and template title.');
+  }
+  if (catalogColors.some(color => !isDeepStrictEqual([...color.sizes].sort(), [...pilot.sizes].sort())) ||
+    !isDeepStrictEqual(review.product.variants?.map(mockupifyDigest).sort(), expected.variants.map(mockupifyDigest).sort())) {
+    throw new WorkerError('MOCKUPIFY_PILOT_VARIANTS_MISMATCH', 'Expected Shopify variants must use the exact Color and Size values at the verified initial catalog price.');
   }
 }

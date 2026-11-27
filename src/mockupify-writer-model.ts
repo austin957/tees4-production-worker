@@ -44,6 +44,12 @@ export interface MockupifyReview {
   };
   exclusiveBatchControlEvidence: string;
   initialDescriptionEvidence?: string;
+  expectedInitialDescription?: {
+    source: 'uploaded_design_only';
+    text: string;
+    evidence: string;
+  };
+  variantOptionsEvidence?: string;
   publicationSafety: {
     evidence: string;
     startsAt: number;
@@ -62,11 +68,29 @@ export type MockupifyReviewInput = Omit<MockupifyReview, 'product' | 'publicatio
   publicationSafety: MockupifyReview['publicationSafety'] | null;
 };
 
+export interface MockupifyExportReviewInput {
+  descriptionSourceEvidence: string;
+  variantOptionsEvidence: string;
+  publicationSafety: MockupifyReview['publicationSafety'];
+}
+
+export function hasUploadedDescriptionReview(review: MockupifyReviewInput): boolean {
+  const expected = review.expectedInitialDescription;
+  return expected?.source === 'uploaded_design_only' && !!expected.evidence.trim() &&
+    !!expected.text.trim() && expected.text === review.design.description &&
+    review.product.descriptionHtml === null && review.initialDescriptionEvidence === undefined;
+}
+
 export function unresolvedMockupifyReview(review: MockupifyReviewInput, operation: MockupifyOperation = 'start_export'): string[] {
   const missing: string[] = [];
   if (operation === 'start_export') {
-    if (!review.product.descriptionHtml?.trim()) missing.push('product.descriptionHtml');
-    if (!review.initialDescriptionEvidence?.trim()) missing.push('initialDescriptionEvidence');
+    if (review.expectedInitialDescription) {
+      if (!hasUploadedDescriptionReview(review)) missing.push('expectedInitialDescription');
+      if (!review.variantOptionsEvidence?.trim()) missing.push('variantOptionsEvidence');
+    } else {
+      if (!review.product.descriptionHtml?.trim()) missing.push('product.descriptionHtml');
+      if (!review.initialDescriptionEvidence?.trim()) missing.push('initialDescriptionEvidence');
+    }
     if (!review.publicationSafety) missing.push('publicationSafety');
     if (!review.product.title?.trim()) missing.push('product.title');
     if (!review.product.variants?.length) missing.push('product.variants');

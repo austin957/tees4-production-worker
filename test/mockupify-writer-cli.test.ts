@@ -45,11 +45,11 @@ function pilotFixture() {
   metadata.artworkRegistryName = metadata.design.title = pilot.title;
   metadata.artworkNameResolution = 'Synthetic source name evidence';
   metadata.designerAttribution = pilot.attribution;
-  metadata.design.description = 'Synthetic description\r\nTees-4';
+  metadata.design.description = `${source.description}\r\nDesigned by Tees-4`;
   metadata.design.extra_title = '';
   metadata.design.vendor = metadata.product.vendor = pilot.vendor;
   metadata.design.search_tags = source.tags;
-  metadata.product.title = 'Synthetic exact Shopify title';
+  metadata.product.title = `${pilot.title} ${pilot.garment}`;
   metadata.product.descriptionHtml = '<p>Synthetic description Tees-4</p>';
   metadata.product.tags = ['readytobuy', 'adult', 'S105', 'adjust', 'stock', 'Family', 'Grandpa'];
   metadata.product.variants = catalogColors.flatMap(color => color.sizes.map(size => ({
@@ -183,10 +183,11 @@ test('registration requires the exact combined Shopify tags while preserving the
     { code: 'MOCKUPIFY_PNG_EVIDENCE_MISMATCH' });
 });
 
-test('production CLI stages an existing pilot and requires separate approval, durable storage and fresh source before claiming a batch', async t => {
+test('production CLI stages a pilot and records export evidence against its acknowledged claims', async t => {
   const { directory, database, json, artwork } = localFiles(t);
   t.mock.property(mockupifyPilot, 'pngSha256', input.png.preparedSha256);
   const { api, source, correlation, metadata, preparation } = pilotFixture();
+  api.expectedDesign = metadata.design;
   const id = correlation.correlationId;
   const wrongPng = join(directory, 'different.png');
   writeFileSync(wrongPng, Buffer.concat([png, Buffer.from([0])]));
@@ -210,11 +211,12 @@ test('production CLI stages an existing pilot and requires separate approval, du
     assert.equal(target.origin, 'https://mockupify.io');
     const mockUrl = new URL(target.pathname + target.search, 'https://mockupify.invalid');
     if (init.method === 'POST') {
-      assert.equal(target.pathname, '/api/batches/');
-      assert.deepEqual(JSON.parse(init.body as string), { name: correlation.batchName });
+      assert.ok(target.pathname === '/api/batches/' || target.pathname === '/api/designs/');
+      const operation = target.pathname === '/api/batches/' ? 'create_batch' : 'upload_design';
+      if (operation === 'create_batch') assert.deepEqual(JSON.parse(init.body as string), { name: correlation.batchName });
       const observed = new Store(database, { readOnly: true });
       try {
-        assert.equal(observed.getMockupifyJournal(id).claims.create_batch?.state, 'dispatching');
+        assert.equal(observed.getMockupifyJournal(id).claims[operation]?.state, 'dispatching');
       } finally {
         observed.close();
       }
@@ -309,4 +311,38 @@ test('production CLI stages an existing pilot and requires separate approval, du
   const inspected = await runMockupifyWriterCommand('mockupify-writer-inspect', [id], database);
   assert.ok(inspected && 'history' in inspected);
   assert.deepEqual(Object.keys(inspected.journal.claims), ['create_batch']);
+
+  await dispatch(['upload_design', uploadApproval, artwork]);
+  const before = await runMockupifyWriterCommand('mockupify-writer-inspect', [id], database);
+  assert.ok(before && 'history' in before);
+  assert.equal(before.journal.registrationState, 'pending_review');
+  assert.equal(before.journal.designId, 72);
+  const now = Date.now();
+  const evidence = {
+    descriptionSourceEvidence: 'Synthetic blank template and reviewed upload evidence',
+    variantOptionsEvidence: 'Synthetic Color and Size evidence',
+    publicationSafety: { ...review.publicationSafety, startsAt: now, endsAt: now + 3_600_000 },
+  };
+  const record = (value: unknown) => runMockupifyWriterCommand('mockupify-writer-review-export',
+    [id, json('export-review.json', value)], database);
+  await assert.rejects(record({ ...evidence, publicationSafety: null }), { code: 'INVALID_INPUT' });
+  const publication = t.mock.method(ShopifyReadonlyClient.prototype, 'verifyExportPublicationAccess', async () => {});
+  Object.assign(api.designs[0]!, { description: 'Changed upstream' });
+  await assert.rejects(record(evidence), { code: 'MOCKUPIFY_DESIGN_MISMATCH' });
+  Object.assign(api.designs[0]!, { description: metadata.design.description });
+  const exportedReview = await record(evidence);
+  assert.equal(publication.mock.callCount(), 2);
+  assert.ok(exportedReview && 'registrationState' in exportedReview && 'claims' in exportedReview);
+  assert.equal(exportedReview.registrationState, 'finalized');
+  assert.equal(exportedReview.plan.review.product.descriptionHtml, null);
+  assert.deepEqual(exportedReview.plan.review.expectedInitialDescription, {
+    source: 'uploaded_design_only', text: metadata.design.description, evidence: evidence.descriptionSourceEvidence,
+  });
+  assert.deepEqual(exportedReview.plan.review.product.variants, metadata.product.variants.map(variant => ({ ...variant, price: '18.99' })));
+  assert.deepEqual(exportedReview.claims, before.journal.claims);
+  assert.deepEqual([exportedReview.batchId, exportedReview.designId], [71, 72]);
+  assert.deepEqual(api.posts, ['/api/batches/', '/api/designs/']);
+  const after = await runMockupifyWriterCommand('mockupify-writer-inspect', [id], database);
+  assert.ok(after && 'history' in after);
+  assert.deepEqual(after.history.slice(0, -1), before.history);
 });

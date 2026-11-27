@@ -17,6 +17,7 @@
     "typescript": "5.9.3"
   },
   "dependencies": {
-    "google-auth-library": "11.3.4"
+    "google-auth-library": "11.3.4",
+    "parse5": "8.0.1"
   }
 }

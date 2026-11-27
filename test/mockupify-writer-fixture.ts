@@ -73,6 +73,7 @@ export class FakeMockupify {
   batches: { id: number; name: string; designs_count: number }[] = [{ id: 6100, name: 'Design Input', designs_count: 0 }];
   designs: { id: number; title: string; batch: number; batch_name: string; design_id: string; created: string }[] = [];
   exports: ReturnType<FakeMockupify['makeExport']>[] = [];
+  expectedDesign = review.design;
   afterPost?: (path: string, data: unknown) => Promise<void>;
   beforeRead?: (path: string) => void;
   responseOverride?: (path: string) => Response | undefined;
@@ -175,7 +176,7 @@ export class FakeMockupify {
       assert.equal(file.type, 'image/png');
       assert.deepEqual(Buffer.from(await file.arrayBuffer()), png);
       const { file: _file, ...fields } = Object.fromEntries(form);
-      for (const [key, value] of Object.entries(review.design)) assert.equal(fields[key], value);
+      for (const [key, value] of Object.entries(this.expectedDesign)) assert.equal(fields[key], value);
       const batch = this.batches.find(item => String(item.id) === fields.batch)!;
       batch.designs_count++;
       data = { ...fields, id: 72, batch: batch.id, batch_name: batch.name, created: new Date(this.now).toISOString() };

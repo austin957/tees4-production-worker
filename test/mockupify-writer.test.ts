@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { GoogleAuth } from 'google-auth-library';
 import { readMasterInputSupervisedRows } from '../src/google-sheets.js';
+import { matchesInitialDescription } from '../src/mockupify-description.js';
 import { pilotMockupifyDryRun } from '../src/mockupify-writer-cli.js';
 import { previewMockupifyOperation } from '../src/mockupify-writer.js';
 import { mockupifyOperations } from '../src/mockupify-writer-model.js';
@@ -435,7 +436,25 @@ test('timeout after export dispatch holds the POST and reconciles partial Shopif
   assert.match(history, /"errors":\[\{"designId":72,"productId":10779/);
   assert.match(history, /"shopifyProductId":"9999"/);
   assert.equal(api.posts.filter(path => path === '/api/exports/').length, 1);
+  await assert.rejects(writer.dispatch(id, 'start_export', approval), { code: 'MOCKUPIFY_ALREADY_CLAIMED' });
   assert.deepEqual(store.listProductBindings(), []);
+});
+
+test('terminal export failure retains the claim and reconciliation never retries the POST', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const id = await readyToExport(store, api);
+  const writer = api.writer(store);
+  const approval = api.approve(store, id, 'start_export');
+  await writer.dispatch(id, 'start_export', approval);
+  api.exports[0]!.status = 'failed';
+  const held = await writer.reconcile(id);
+  assert.equal(held.exportTerminal, true);
+  assert.equal(held.exportStatus, 'held');
+  assert.equal((await writer.reconcile(id)).claims.start_export?.state, 'acknowledged');
+  await assert.rejects(writer.dispatch(id, 'start_export', approval), { code: 'MOCKUPIFY_ALREADY_CLAIMED' });
+  assert.equal(api.posts.filter(path => path === '/api/exports/').length, 1);
 });
 
 test('a process exit after applying the batch POST retains the committed claim on restart and restoration', async t => {
@@ -799,6 +818,71 @@ test('export reconciliation requires exact initial HTML and retains the observed
   const { history } = store.inspectMockupifyJournal(id);
   assert.deepEqual(history.filter((event): event is { ready: true } =>
     typeof event === 'object' && event !== null && 'ready' in event && event.ready === true), [initialEvidence]);
+});
+
+test('generated HTML must render the entire reviewed description with only supported formatting', () => {
+  const expected = 'Fast & sharp.\r\nDesigned by Tees-4';
+  for (const match of [
+    'Fast &amp; sharp. Designed by Tees-4',
+    '<div><strong>Fast &amp; sharp.</strong></div><p>Designed&nbsp;by Tees&#45;4</p>',
+    '<p>Fast &amp; <em>sharp.</em><br />Designed by Tees-4</p>',
+  ]) {
+    assert.equal(matchesInitialDescription(match, expected), true, match);
+  }
+  for (const mismatch of [
+    '', 'Fast &amp; sharp.', 'Designed by Tees-4', 'Slow &amp; sharp. Designed by Tees-4',
+    'Fast &amp; sharp. Designed by tees-4', 'Fast &amp; sharp. Designed by Tees-4<p>Garment details</p>',
+    '<p hidden>Fast &amp; sharp. Designed by Tees-4</p>',
+    '<span style="display:none">Fast &amp; sharp.</span> Designed by Tees-4',
+    '<script>Fast &amp; sharp.</script>Designed by Tees-4',
+    '<p>Fast &amp;amp; sharp. Designed by Tees-4</p>',
+    '<p>Fast &amp; sharp. Designed by Tees-4</p><svg></svg>',
+    '<body hidden>Fast &amp; sharp. Designed by Tees-4</body>',
+    '<!DOCTYPE html>Fast &amp; sharp. Designed by Tees-4',
+  ]) {
+    assert.equal(matchesInitialDescription(mismatch, expected), false, mismatch);
+  }
+});
+
+test('design-sourced review retains generated HTML as Shopify evidence and holds later enhancements', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const writer = api.writer(store);
+  const pending = await writer.prepare(input, {
+    ...reviewWithoutHtmlEvidence, product: { ...review.product, descriptionHtml: null, variants: null }, publicationSafety: null,
+  }, png, 'pending_review');
+  const id = pending.plan.correlation.correlationId;
+  for (const operation of ['create_batch', 'upload_design'] as const) {
+    await writer.dispatch(id, operation, api.approve(store, id, operation), png);
+  }
+  const evidence = { descriptionSourceEvidence: 'Fixture blank template and upload', variantOptionsEvidence: 'Fixture variants',
+    publicationSafety: review.publicationSafety };
+  const project = () => ({ title: review.product.title, variants: review.product.variants });
+  api.now = review.publicationSafety.endsAt;
+  await assert.rejects(writer.reviewExport(id, evidence, project), { code: 'MOCKUPIFY_PUBLICATION_WINDOW' });
+  api.now = initialTime;
+  await writer.reviewExport(id, evidence, project);
+  await assert.rejects(writer.dispatch(id, 'start_export'), { code: 'MOCKUPIFY_APPROVAL_REQUIRED' });
+  await writer.dispatch(id, 'start_export', api.approve(store, id, 'start_export'));
+  api.finish();
+
+  api.productOverride.descriptionHtml = '<p>Designed by Fixture Designer</p>';
+  assert.equal((await writer.reconcile(id)).exportStatus, 'held');
+  const actual = '<p>Designed by Fixture Designer<br><em>Second line</em></p>';
+  api.productOverride.descriptionHtml = actual;
+  assert.equal((await writer.reconcile(id)).exportStatus, 'validated_for_binding_review');
+  const verified = store.inspectMockupifyJournal(id).history.at(-1);
+  assert.partialDeepStrictEqual(verified, {
+    ready: true, verified: [{ gid: productGid, initialDescriptionMatches: true, snapshot: { descriptionHtml: actual } }],
+  });
+  api.productOverride.descriptionHtml = actual + '<div>Later Hextom garment details</div>';
+  const held = await writer.reconcile(id);
+  assert.equal(held.exportStatus, 'held');
+  assert.deepEqual(held.observedProductGids, [productGid]);
+  assert.equal(held.plan.review.product.descriptionHtml, null);
+  assert.ok(store.inspectMockupifyJournal(id).history.some(event => JSON.stringify(event) === JSON.stringify(verified)));
+  assert.deepEqual(api.posts, ['/api/batches/', '/api/designs/', '/api/exports/']);
 });
 
 test('export reconciliation checks the exact reviewed Shopify tags, including adjust', async t => {

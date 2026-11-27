@@ -30,7 +30,7 @@ Supply these fields in the separate metadata-review JSON. For pending registrati
 | `design` | Exact strings for `title`, `description`, `extra_title`, `search_tags`, `vendor`, and `extra_price`. The pilot uses an empty `extra_title`, `Family, Grandpa`, `test test` and `0.00`. Use the reviewed artwork copy and include the designer attribution in the description. |
 | `shop` | `id` and `domain` for the approved shop, with independent `connectionEvidence` linking the Mockupify account to it |
 | `product` | Exact expected Shopify `title`, initial `descriptionHtml` including attribution, `vendor`, and `status` of `ACTIVE`. See the [pilot description evidence](mockupify-pilot-row-9.md#initial-and-hextom-enhanced-descriptions). Set the `tags` array to exactly `readytobuy`, `adult`, `S105`, `adjust`, `stock`, `Family`, and `Grandpa` in any order, with each tag listed once. Provide `variants` as all 14 reviewed entries, each with an `options` object mapping exact option names to strings and a `price` string. Catalog color prices alone cannot establish final Shopify variant prices. |
-| `initialDescriptionEvidence` | Reference to the trusted record supporting the exact initial Shopify HTML. Required for export review. |
+| `initialDescriptionEvidence` | Reference to the trusted record supporting the exact initial Shopify HTML when using the exact-HTML review path. |
 | `exclusiveBatchControlEvidence` | Evidence that this pilot has exclusive control of its isolated batch through export completion |
 | `publicationSafety` | Verified Hextom rule and safety `evidence`, interval `startsAt` and `endsAt` as Unix epoch milliseconds, and the required `minimumMinutes` for completing the export and observations |
 
@@ -68,12 +68,24 @@ npm.cmd run --silent worker -- mockupify-writer-dispatch $correlationId upload_d
 
 ### Finalize export review
 
-Copy the original review to `metadata-review.json` and fill the outstanding fields, including the same exclusive batch control evidence already recorded. Supply the same preparation JSON and PNG. Finalization rechecks the source, artwork digest, catalog, Shopify shop, any previously recorded batch and design, and the time remaining in the verified Hextom-safe interval. Settle any uncertain batch or upload claim through reconciliation before finalizing. Finalization preserves the correlation, prior evidence and settled claims. A new pilot with complete evidence can also use `mockupify-writer-register`.
+For the existing Bold Arrow Emblem pilot, use the original `TEES4_DATABASE` and the JSON fields below. The command verifies the recorded source, live catalog, shop identity, Shopify publication read access, and the exact uploaded design in its exclusive batch. It records the uploaded copy as the expected initial Shopify text and projects all 14 initial `Color` × `Size` variants at `18.99` from the rechecked catalog. It preserves the acknowledged claims and leaves Shopify HTML to be observed after export.
+
+| `export-review.json` field | Required evidence |
+| --- | --- |
+| `descriptionSourceEvidence` | Reference to the verified blank product description on template `10779` and the reviewed copy with attribution on uploaded design `70253`. Use the template settings evidence for the blank description. The catalog API exposes colors, sizes and prices. |
+| `variantOptionsEvidence` | Reference to prior verified product evidence supporting the exact Shopify option names `Color` and `Size`. The reviewed variants are projections for this pilot until Shopify confirms them. |
+| `publicationSafety` | An object containing `evidence`, `startsAt`, `endsAt`, and `minimumMinutes`. Supply the verified Hextom-safe interval for export and observation, with start and end as Unix epoch milliseconds. Verify that observation can finish before eligible publication and description enhancement. |
+
+```powershell
+npm.cmd run --silent worker -- mockupify-writer-review-export $correlationId '.\export-review.json'
+npm.cmd run --silent worker -- mockupify-writer-readiness $correlationId
+```
+
+The existing `mockupify-writer-finalize` command remains available for reviews backed by previously verified exact HTML. It takes the original preparation JSON, PNG and completed metadata review. A new pilot with complete exact-HTML evidence can use `mockupify-writer-register`.
 
 Set `TEES4_MOCKUPIFY_EXPORT_MARGIN_MINUTES` to the approved positive integer margin before export. Preview the export after the journal has a verified batch and design ID, then obtain separate approval for that digest before dispatch.
 
 ```powershell
-npm.cmd run --silent worker -- mockupify-writer-finalize '.\preparation.json' '.\review.png' '.\metadata-review.json'
 npm.cmd run --silent worker -- mockupify-writer-preview $correlationId start_export
 npm.cmd run --silent worker -- mockupify-writer-dispatch $correlationId start_export --execute '.\export-approval.json'
 npm.cmd run --silent worker -- mockupify-writer-reconcile $correlationId
