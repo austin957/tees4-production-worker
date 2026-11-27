@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { MasterInputSkuRow } from './google-sheets.js';
 import { mockupifyCorrelation } from './mockupify-preparation.js';
 import type { parseExportDetail } from './mockupify-readonly.js';
-import { mockupifyInitialSku } from './mockupify-writer-model.js';
+import { mockupifyDigest, mockupifyInitialSku } from './mockupify-writer-model.js';
 import type { MockupifyClaim, MockupifyJournal } from './mockupify-writer-model.js';
 import { WorkerError } from './model.js';
 import type { ProductBinding } from './product-bindings.js';
@@ -93,10 +93,19 @@ function mapVariants(product: ProductRead, expected: MockupifyJournal['plan']['r
   });
 }
 
-export async function previewMockupifySkuReplacement(
-  store: Pick<Store, 'getProductBinding' | 'getMockupifyJournal' | 'inspectMockupifyJournal'>, bindingId: string,
-  evidence: { shopId: string; shopify: Pick<ShopifyReadonlyClient, 'product'>; readMasterInput: () => Promise<MasterInputSkuRow[]> },
-  clock = Date.now,
+export type SkuReplacementEvidence = {
+  shopId: string;
+  shopify: Pick<ShopifyReadonlyClient, 'product'>;
+  readMasterInput: () => Promise<MasterInputSkuRow[]>;
+};
+type EvidenceStore = Pick<Store, 'getProductBinding' | 'inspectMockupifyJournal'>;
+
+export function skuEvidenceDigest(binding: ProductBinding, record: ReturnType<Store['inspectMockupifyJournal']>) {
+  return mockupifyDigest(JSON.stringify({ binding, record }));
+}
+
+export async function validateMockupifySkuReplacement(
+  store: EvidenceStore, bindingId: string, evidence: SkuReplacementEvidence, shopifyLast = false,
 ) {
   const binding = store.getProductBinding(bindingId);
   if (binding.status !== 'approved' || !binding.confirmation) {
@@ -110,14 +119,20 @@ export async function previewMockupifySkuReplacement(
   const { correlationId } = correlation;
   const record = store.inspectMockupifyJournal(correlationId);
   const { journal } = record;
+  const evidenceDigest = skuEvidenceDigest(binding, record);
   const provenance = verifiedExport(binding, record, correlation);
   const checkSource = async () => {
     const rows = await evidence.readMasterInput();
-    if (findMasterInputSkuRow({ kind: 'live', rows }, binding, binding.rowNumber).status !== 'MATCHED') {
+    const finding = findMasterInputSkuRow({ kind: 'live', rows }, binding, binding.rowNumber);
+    if (finding.status !== 'MATCHED') {
       throw new WorkerError('SKU_REPLACEMENT_SOURCE_CHANGED', 'The exact Product SKU and Artwork SKU must still match one live Master Input row.');
     }
+    return finding;
   };
-  await checkSource();
+  const source = await checkSource();
+  if (shopifyLast && !isDeepStrictEqual(source, await checkSource())) {
+    throw new WorkerError('SKU_REPLACEMENT_SOURCE_CHANGED', 'Relevant Master Input rows changed during verification.');
+  }
   const product = await readStableShopifyProduct(evidence.shopify, binding.productId);
   if (!product) throw new WorkerError('SHOPIFY_PRODUCT_CHANGED', 'Shopify changed during the complete product reads.');
   if (product.id !== binding.productId) throw new WorkerError('SHOPIFY_PRODUCT_MISMATCH', 'Shopify returned a different product GID.');
@@ -128,11 +143,19 @@ export async function previewMockupifySkuReplacement(
   if (!isDeepStrictEqual(product, binding.shopifySnapshot)) {
     throw new WorkerError('SKU_REPLACEMENT_BINDING_DRIFT', 'The live Shopify product differs from the approved binding snapshot.');
   }
-  await checkSource();
-  if (!isDeepStrictEqual(store.getProductBinding(bindingId), binding) ||
-    store.getMockupifyJournal(correlationId).revision !== journal.revision) {
+  if (!shopifyLast && !isDeepStrictEqual(source, await checkSource())) {
+    throw new WorkerError('SKU_REPLACEMENT_SOURCE_CHANGED', 'Relevant Master Input rows changed during verification.');
+  }
+  if (skuEvidenceDigest(store.getProductBinding(bindingId), store.inspectMockupifyJournal(correlationId)) !== evidenceDigest) {
     throw new WorkerError('SKU_REPLACEMENT_BINDING_DRIFT', 'The binding or export journal changed during the preview.');
   }
+  return { binding, provenance, variants, evidenceDigest, source };
+}
+
+export async function previewMockupifySkuReplacement(
+  store: EvidenceStore, bindingId: string, evidence: SkuReplacementEvidence, clock = Date.now,
+) {
+  const { binding, provenance, variants } = await validateMockupifySkuReplacement(store, bindingId, evidence);
   const checkedAt = clock();
   const until = protectedUntil(checkedAt);
   const eligibility = until === undefined ? 'ELIGIBLE_FOR_REVIEW' : 'DEFERRED_PROTECTED_WINDOW';

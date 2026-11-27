@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { WorkerError } from './model.js';
 import { mockupifyDigest } from './mockupify-writer-model.js';
 import type { MockupifyClaim } from './mockupify-writer-model.js';
-import { workerSchema } from './store-schema.js';
+import { shopifySkuSchema, workerSchema } from './store-schema.js';
 
 const evidenceLifetime = 24 * 60 * 60 * 1000;
 const evidenceVersion = 1;
@@ -77,9 +77,10 @@ function schema(db: DatabaseSync) {
 
 function checkSchema(db: DatabaseSync, evidence?: boolean) {
   using reference = new DatabaseSync(':memory:');
-  reference.exec(workerSchema + (evidence === false ? '' : evidenceSchema));
-  const expected = schema(reference);
   const actual = schema(db);
+  const skuSchema = actual.some(row => String(row.name).startsWith('shopify_sku_')) ? shopifySkuSchema : '';
+  reference.exec(workerSchema + skuSchema + (evidence === false ? '' : evidenceSchema));
+  const expected = schema(reference);
   const comparable = actual.some(row => row.name === 'mockupify_durability') || evidence !== undefined
     ? expected : expected.filter(row => row.name !== 'mockupify_durability');
   if (db.prepare('PRAGMA user_version').get()?.user_version !== 0 ||

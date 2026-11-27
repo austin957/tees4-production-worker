@@ -33,6 +33,10 @@ const help = `Tees-4 Production Worker
   binding-list
   binding-inspect <binding-id>
   mockupify-sku-replacement-preview <binding-id> [--header-row <number>]
+  mockupify-sku-replacement-dry-run <binding-id> [--header-row <number>]
+  mockupify-sku-replacement-approve <binding-id> <plan-id> --by <owner> --source <evidence-ref> [--header-row <number>]
+  mockupify-sku-replacement-inspect <plan-id>
+  mockupify-sku-replacement-reconcile <plan-id>
   binding-propose <assignment.json> --by <operator>
   binding-review <binding-id> approve --by <owner> --source <evidence-ref> [--header-row <number>]
   binding-review <binding-id> reject --by <operator> --reason <reason>
@@ -172,7 +176,11 @@ async function main(): Promise<void> {
     }
     selectedArtwork = preview.artwork;
   }
-  const store = new Store(databasePath, { readOnly: command === 'mockupify-sku-replacement-preview' });
+  const skuReplacement = command.startsWith('mockupify-sku-replacement-');
+  const store = new Store(databasePath, {
+    readOnly: skuReplacement && !['mockupify-sku-replacement-approve', 'mockupify-sku-replacement-reconcile'].includes(command),
+    existing: skuReplacement,
+  });
   try {
     if (Object.hasOwn(bindingCommands, command)) {
       const result = await runBindingCommand(store, command, positionals, values);

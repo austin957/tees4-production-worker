@@ -115,3 +115,47 @@ CREATE TABLE IF NOT EXISTS post_hextom_alerts (
   first_seen_at INTEGER NOT NULL
 );
 `;
+
+const skuJournalTables = ['shopify_sku_plans', 'shopify_sku_approvals', 'shopify_sku_events'];
+
+export const shopifySkuSchema = `
+CREATE TABLE IF NOT EXISTS shopify_sku_plans (
+  id TEXT PRIMARY KEY,
+  binding_id TEXT NOT NULL REFERENCES product_bindings(id),
+  body TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS shopify_sku_approvals (
+  sequence INTEGER PRIMARY KEY,
+  plan_id TEXT NOT NULL REFERENCES shopify_sku_plans(id),
+  body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS shopify_sku_plan_approvals ON shopify_sku_approvals(plan_id, sequence);
+CREATE TABLE IF NOT EXISTS shopify_sku_dispatches (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL REFERENCES shopify_sku_plans(id),
+  approval_sequence INTEGER NOT NULL REFERENCES shopify_sku_approvals(sequence),
+  shop_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  claimed_at INTEGER NOT NULL,
+  cancelled_before_send INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS shopify_sku_product_dispatch
+  ON shopify_sku_dispatches(shop_id, product_id) WHERE cancelled_before_send = 0;
+CREATE TABLE IF NOT EXISTS shopify_sku_events (
+  sequence INTEGER PRIMARY KEY,
+  plan_id TEXT NOT NULL REFERENCES shopify_sku_plans(id),
+  body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS shopify_sku_plan_events ON shopify_sku_events(plan_id, sequence);
+` + skuJournalTables.map(table => {
+    const key = table === 'shopify_sku_plans' ? 'id' : 'sequence';
+    return `
+CREATE TRIGGER IF NOT EXISTS ${table}_no_update BEFORE UPDATE ON ${table}
+  BEGIN SELECT RAISE(ABORT, 'SKU journal history is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS ${table}_no_delete BEFORE DELETE ON ${table}
+  BEGIN SELECT RAISE(ABORT, 'SKU journal history is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS ${table}_no_replace BEFORE INSERT ON ${table}
+  WHEN EXISTS (SELECT 1 FROM ${table} WHERE ${key} = NEW.${key})
+  BEGIN SELECT RAISE(ABORT, 'SKU journal history is append-only'); END;
+`;
+  }).join('');

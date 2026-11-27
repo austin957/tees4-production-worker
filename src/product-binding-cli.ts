@@ -5,6 +5,7 @@ import { WorkerError } from './model.js';
 import { parseBindingAssignment, proposeProductBinding, reviewProductBinding } from './product-bindings.js';
 import { reportPostHextom } from './shopify-post-hextom.js';
 import { shopifyReadConfig, ShopifyReadonlyClient } from './shopify-readonly.js';
+import { approveSkuReplacement, dryRunSkuReplacement, reconcileSkuReplacement } from './shopify-sku-execution.js';
 import type { Store } from './store.js';
 
 export const bindingCommands = {
@@ -12,6 +13,10 @@ export const bindingCommands = {
   'binding-inspect': {},
   'shopify-post-hextom': {},
   'mockupify-sku-replacement-preview': { 'header-row': { type: 'string' } },
+  'mockupify-sku-replacement-dry-run': { 'header-row': { type: 'string' } },
+  'mockupify-sku-replacement-approve': { by: { type: 'string' }, source: { type: 'string' }, 'header-row': { type: 'string' } },
+  'mockupify-sku-replacement-inspect': {},
+  'mockupify-sku-replacement-reconcile': {},
   'binding-propose': { by: { type: 'string' } },
   'binding-review': {
     by: { type: 'string' }, source: { type: 'string' }, reason: { type: 'string' }, 'header-row': { type: 'string' },
@@ -30,15 +35,22 @@ function masterInputHeaderRow(value: unknown): number {
 }
 
 export async function runBindingCommand(store: Store, command: string, args: string[], values: Record<string, unknown>) {
-  const expectedCount = command === 'binding-list' ? 0 : command === 'binding-review' ? 2 : 1;
+  const expectedCount = command === 'binding-list' ? 0 : ['binding-review', 'mockupify-sku-replacement-approve'].includes(command) ? 2 : 1;
   if (args.length !== expectedCount) throw new WorkerError('CLI_USAGE', 'Wrong number of binding arguments. Run worker help for usage.');
   if (command === 'binding-list') return store.listProductBindings();
   if (command === 'binding-inspect') return store.inspectProductBinding(args[0]!);
-  if (command === 'mockupify-sku-replacement-preview') {
+  if (command === 'mockupify-sku-replacement-inspect') return store.shopifySkuJournal.inspect(args[0]!);
+  if (command === 'mockupify-sku-replacement-reconcile') {
+    return reconcileSkuReplacement(store, args[0]!, shopifyEvidence());
+  }
+  if (command === 'mockupify-sku-replacement-preview' || command === 'mockupify-sku-replacement-dry-run' ||
+    command === 'mockupify-sku-replacement-approve') {
     const headerRow = masterInputHeaderRow(values['header-row']);
-    return previewMockupifySkuReplacement(store, args[0]!, {
-      ...shopifyEvidence(), readMasterInput: () => readMasterInputSkuRows(headerRow),
-    });
+    const evidence = { ...shopifyEvidence(), readMasterInput: () => readMasterInputSkuRows(headerRow) };
+    if (command === 'mockupify-sku-replacement-preview') return previewMockupifySkuReplacement(store, args[0]!, evidence);
+    if (command === 'mockupify-sku-replacement-dry-run') return dryRunSkuReplacement(store, args[0]!, evidence);
+    return approveSkuReplacement(store, args[0]!, args[1]!, requiredText(values.by, 'Approver supplied with --by'),
+      requiredText(values.source, 'Execution approval evidence supplied with --source'), evidence);
   }
   if (command === 'shopify-post-hextom') {
     const { shopId, shopify } = shopifyEvidence();

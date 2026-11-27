@@ -17,6 +17,7 @@ import type { BindingAssignment, BindingEvent, BindingReviewEvent, ProductBindin
 import type { ProductRead } from './shopify-readonly.js';
 import { existingSku, parseShopifyCatalog, resolveProduct } from './shopify-skus.js';
 import type { InitialSkuTarget, ShopifyProduct, ShopifyProductBinding, ShopifySkuAdapter } from './shopify-skus.js';
+import { ShopifySkuJournal } from './shopify-sku-journal.js';
 import { workerSchema } from './store-schema.js';
 import type { Artwork, Details, GarmentCompletion, Job, Mode, StageResult, Workflow, WriteAction } from './model.js';
 
@@ -39,6 +40,7 @@ function identity(artwork: Artwork, mode: Mode, workflow: Workflow): string {
 
 export class Store {
   private readonly db: DatabaseSync;
+  readonly shopifySkuJournal: ShopifySkuJournal;
   private readonly path: string;
   private readonly openedIdentity: string | null;
 
@@ -49,7 +51,7 @@ export class Store {
       const before = databaseIdentity(this.path);
       if (existing && !before) throw new Error('Supply the path to an existing SQLite database.');
       if (!readOnly && !existing && path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true });
-      const filename = existing ? pathToFileURL(this.path).href + '?mode=rw' : this.path;
+      const filename = existing ? pathToFileURL(this.path).href + (readOnly ? '?mode=ro' : '?mode=rw') : this.path;
       db = new DatabaseSync(filename, { readOnly, timeout: 5000 });
       this.db = db;
       const after = databaseIdentity(this.path);
@@ -59,6 +61,7 @@ export class Store {
         db.exec('PRAGMA synchronous = FULL');
         if (!existing) db.exec(workerSchema);
       }
+      this.shopifySkuJournal = new ShopifySkuJournal(db, run => this.transaction(run));
     } catch (error) {
       db?.close();
       throw new WorkerError('DATABASE_OPEN', `Could not initialize the worker database: ${error instanceof Error ? error.message : 'unknown error'}`);
