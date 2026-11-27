@@ -11,7 +11,9 @@ const attempts = 4;
 const maxDelayMs = 30_000;
 const productScope = 'read_products';
 const publicationScope = 'read_publications';
-const exportScopeMessage = 'Use a dedicated Shopify app installation with exactly read_products and read_publications.';
+const productWriteScope = 'write_products';
+const allowedReadScopes = new Set([productScope, publicationScope, productWriteScope]);
+const exportScopeMessage = 'Use a dedicated Shopify app installation with exactly read_products and read_publications, optionally with write_products.';
 
 interface ShopifyConnectionConfig {
   domain: string;
@@ -307,11 +309,12 @@ class ShopifyReadTransport {
     }
     if (data.currentAppInstallation === null) throw new WorkerError('SHOPIFY_PERMISSION', 'No Shopify app installation was returned.');
     const scopes = array(record(data.currentAppInstallation).accessScopes).map(scope => string(record(scope).handle));
+    const requiresPublicationScope = this.config.exportPublicationReads || scopes.includes(productWriteScope);
     if (!scopes.includes(productScope) || new Set(scopes).size !== scopes.length ||
-      scopes.some(scope => scope !== productScope && scope !== publicationScope) ||
-      (this.config.exportPublicationReads && !scopes.includes(publicationScope))) {
+      scopes.some(scope => !allowedReadScopes.has(scope)) ||
+      (requiresPublicationScope && !scopes.includes(publicationScope))) {
       throw new WorkerError('SHOPIFY_PERMISSION', this.config.exportPublicationReads ? exportScopeMessage :
-        'Use a dedicated Shopify app installation with exactly read_products, optionally with read_publications.');
+        'Use a dedicated Shopify app installation with exactly read_products alone or read_products and read_publications, with write_products allowed only alongside both read scopes.');
     }
     const id = shopifyGid(shop.id, 'Shop');
     return { id, domain: this.config.domain, apiVersion: this.config.version, scopes };

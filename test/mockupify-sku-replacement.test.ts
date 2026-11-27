@@ -632,7 +632,9 @@ test('live path verifies the acting installation ID and write_products grant', a
   f.setScopes(['write_products']);
   f.setInstallation('gid://shopify/AppInstallation/125');
   await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_INSTALLATION_UNAUTHORIZED' });
-  assert.deepEqual(f.calls, ['token', 'identity', 'token', 'identity']);
+  f.setScopes(['read_products', 'read_publications', 'write_products']);
+  await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_INSTALLATION_UNAUTHORIZED' });
+  assert.deepEqual(f.calls, ['token', 'identity', 'token', 'identity', 'token', 'identity']);
 });
 
 test('live path stops on missing, stale, mismatched or withdrawn Hextom pause evidence', async t => {

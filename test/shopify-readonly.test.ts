@@ -26,6 +26,7 @@ const identity = {
   currentAppInstallation: { accessScopes: [{ handle: 'read_products' }] },
 };
 const exportScopes = ['read_products', 'read_publications'];
+const upgradedScopes = ['write_products', ...exportScopes];
 const grant = { access_token: 'fixture-token', expires_in: 86_400 };
 const variant = (n: number, sku: string | null = '000710', size = 'M', color = 'White') => ({
   id: `gid://shopify/ProductVariant/${n}`, sku,
@@ -244,18 +245,15 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
     return JSON.parse(result.stdout);
   };
   const run = (...args: string[]) => runWithScopes(['read_products'], ...args);
-  const auth = cli(config.shopId, ['shopify-auth'], exportScopes);
-  assert.equal(auth.status, 0, auth.stderr);
-  assert.deepEqual(JSON.parse(auth.stdout), {
-    id: config.shopId, domain: config.domain, apiVersion: config.version, scopes: exportScopes,
-  });
-  assert.doesNotMatch(auth.stdout, /fixture-secret|fixture-token/);
-  for (const scopes of [['read_products'], [...exportScopes, 'write_products'], [...exportScopes, 'read_inventory']]) {
-    const denied = cli(config.shopId, ['shopify-auth'], scopes);
-    assert.equal(denied.status, 1);
-    assert.match(denied.stderr, /SHOPIFY_PERMISSION/);
+  for (const scopes of [exportScopes, upgradedScopes]) {
+    const auth = cli(config.shopId, ['shopify-auth'], scopes);
+    assert.equal(auth.status, 0, auth.stderr);
+    assert.deepEqual(JSON.parse(auth.stdout), {
+      id: config.shopId, domain: config.domain, apiVersion: config.version, scopes,
+    });
+    assert.doesNotMatch(auth.stdout, /fixture-secret|fixture-token/);
   }
-  for (const scopes of [['read_products'], [...exportScopes].reverse()]) {
+  for (const scopes of [['read_products'], [...exportScopes].reverse(), upgradedScopes]) {
     assert.equal(runWithScopes(scopes, 'shopify-product', id).id, id);
     assert.equal(runWithScopes(scopes, 'shopify-variants', id).variants.length, 2);
     const reconciliation = runWithScopes(scopes, 'shopify-reconcile', id, '--product-sku', '000710', '--artwork-sku', '00042',
@@ -498,13 +496,48 @@ test('export reconciliation reads sales-channel evidence without changing existi
   assert.match((await calls[3]!.json()).query, /resourcePublicationsV2\(first: 1, catalogType: APP, onlyPublished: false\)/);
 });
 
-test('publication access requires the dedicated read-only scopes and complete evidence, including staged publications', async () => {
-  for (const scopes of [['read_products'], ['read_products', 'read_publications', 'write_products']]) {
-    const { client } = mocked([response(grant), response({ data: { ...identity,
-      currentAppInstallation: { accessScopes: scopes.map(handle => ({ handle })) },
-    } })], [], exportConfig);
-    await assert.rejects(client.verifyExportPublicationAccess(), { code: 'SHOPIFY_PERMISSION' });
+test('both app scope sets allow only fixed GraphQL publication queries', async () => {
+  for (const scopes of [exportScopes, upgradedScopes]) {
+    const publication = { resourcePublicationsV2: { nodes: [], pageInfo: { hasNextPage: false } } };
+    const { client, calls } = mocked([
+      response(grant),
+      response({ data: { ...identity, currentAppInstallation: { accessScopes: scopes.map(handle => ({ handle })) } } }),
+      response({ data: { products: { nodes: [publication] } } }),
+      response({ data: { product: { ...product([]), descriptionHtml: '', ...publication } } }),
+    ], [], exportConfig);
+    await client.verifyExportPublicationAccess();
+    assert.equal((await client.productForExport(id)).hasSalesChannelPublication, false);
+    const requests = await Promise.all(calls.slice(1).map(call => call.json()));
+    assert.deepEqual(requests.map(request => request.query.match(/^query \w+/)?.[0]), [
+      'query Tees4ReadIdentity', 'query Tees4CheckPublicationRead', 'query Tees4ReadExportProduct',
+    ]);
   }
+});
+
+test('read scope validation rejects incomplete, duplicate and unrelated scope combinations', async () => {
+  const rejectedScopes = [
+    [],
+    ['read_publications', 'write_products'],
+    ['read_products', 'write_products'],
+    [...exportScopes, 'read_products'],
+    [...upgradedScopes, 'read_publications'],
+    [...upgradedScopes, 'write_products'],
+    [...exportScopes, 'read_inventory'],
+    [...upgradedScopes, 'read_inventory'],
+  ];
+  for (const readConfig of [config, exportConfig]) {
+    const cases = readConfig === exportConfig ? [...rejectedScopes, ['read_products']] : rejectedScopes;
+    for (const scopes of cases) {
+      const { client, calls } = mocked([response(grant), response({ data: { ...identity,
+        currentAppInstallation: { accessScopes: scopes.map(handle => ({ handle })) },
+      } })], [], readConfig);
+      await assert.rejects(client.verifyShop(), { code: 'SHOPIFY_PERMISSION' }, JSON.stringify(scopes));
+      assert.equal(calls.length, 2);
+    }
+  }
+});
+
+test('publication access requires complete evidence, including staged publications', async () => {
   const { client } = mocked([
     response(grant), response({ data: exportIdentity }),
     response({ data: { products: { nodes: [{ resourcePublicationsV2: { nodes: [], pageInfo: { hasNextPage: false } } }] } } }),
