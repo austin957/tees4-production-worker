@@ -164,6 +164,10 @@ export function sha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+export function mockupifyInitialSku(designId: number, color: string, size: string): string {
+  return `${designId}-${color}-${size}`;
+}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
   if (value && typeof value === 'object') {

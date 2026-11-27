@@ -1,5 +1,6 @@
 import { integer, readJson, requiredText } from './config.js';
 import { readMasterInputSkuRows } from './google-sheets.js';
+import { previewMockupifySkuReplacement } from './mockupify-sku-replacement.js';
 import { WorkerError } from './model.js';
 import { parseBindingAssignment, proposeProductBinding, reviewProductBinding } from './product-bindings.js';
 import { reportPostHextom } from './shopify-post-hextom.js';
@@ -10,6 +11,7 @@ export const bindingCommands = {
   'binding-list': {},
   'binding-inspect': {},
   'shopify-post-hextom': {},
+  'mockupify-sku-replacement-preview': { 'header-row': { type: 'string' } },
   'binding-propose': { by: { type: 'string' } },
   'binding-review': {
     by: { type: 'string' }, source: { type: 'string' }, reason: { type: 'string' }, 'header-row': { type: 'string' },
@@ -21,11 +23,23 @@ function shopifyEvidence() {
   return { shopId: config.shopId, shopify: new ShopifyReadonlyClient(config) };
 }
 
+function masterInputHeaderRow(value: unknown): number {
+  const header = value ?? '1';
+  return integer(typeof header === 'string' && /^\d+$/.test(header) ? Number(header) : NaN,
+    'Master Input header row', 1, Number.MAX_SAFE_INTEGER);
+}
+
 export async function runBindingCommand(store: Store, command: string, args: string[], values: Record<string, unknown>) {
   const expectedCount = command === 'binding-list' ? 0 : command === 'binding-review' ? 2 : 1;
   if (args.length !== expectedCount) throw new WorkerError('CLI_USAGE', 'Wrong number of binding arguments. Run worker help for usage.');
   if (command === 'binding-list') return store.listProductBindings();
   if (command === 'binding-inspect') return store.inspectProductBinding(args[0]!);
+  if (command === 'mockupify-sku-replacement-preview') {
+    const headerRow = masterInputHeaderRow(values['header-row']);
+    return previewMockupifySkuReplacement(store, args[0]!, {
+      ...shopifyEvidence(), readMasterInput: () => readMasterInputSkuRows(headerRow),
+    });
+  }
   if (command === 'shopify-post-hextom') {
     const { shopId, shopify } = shopifyEvidence();
     return reportPostHextom(store, shopify, shopId, args[0]!);
@@ -50,9 +64,7 @@ export async function runBindingCommand(store: Store, command: string, args: str
   const review = action === 'approve'
     ? { action, by, source: requiredText(values.source, 'Owner confirmation evidence reference') } as const
     : { action, by } as const;
-  const header = values['header-row'] ?? '1';
-  const headerRow = integer(typeof header === 'string' && /^\d+$/.test(header) ? Number(header) : NaN,
-    'Master Input header row', 1, Number.MAX_SAFE_INTEGER);
+  const headerRow = masterInputHeaderRow(values['header-row']);
   const result = await reviewProductBinding(store, id, review, {
     ...shopifyEvidence(), readMasterInput: async () => ({ kind: 'live', rows: await readMasterInputSkuRows(headerRow) }),
   });

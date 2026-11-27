@@ -8,7 +8,9 @@ import {
   parseBatch, parseDesignEvidence, parseExportDetail,
 } from './mockupify-readonly.js';
 import { mockupifyCorrelation, parseMockupifyPreparationInput, prepareMockupifyExport, readApprovedMockupifyConfig } from './mockupify-preparation.js';
-import { assertMockupifyOperationReview, hasUploadedDescriptionReview, mockupifyDigest, sha256, unresolvedMockupifyReview } from './mockupify-writer-model.js';
+import {
+  assertMockupifyOperationReview, hasUploadedDescriptionReview, mockupifyDigest, mockupifyInitialSku, sha256, unresolvedMockupifyReview,
+} from './mockupify-writer-model.js';
 import type {
   MockupifyApproval, MockupifyClaim, MockupifyExportReviewInput, MockupifyJournal, MockupifyOperation, MockupifyPost,
   MockupifyReviewInput, SupervisedMockupifyPlan, SupervisedSourceRow,
@@ -175,7 +177,7 @@ function checkProduct(product: ProductRead | null, gid: string, plan: Supervised
       !/^\d+(?:\.\d{1,2})?$/.test(variant.price) || new Set(entries.map(([name]) => name)).size !== entries.length) return null;
     const options = Object.fromEntries(entries);
     const { Color, Size } = options;
-    if (!nonblank(Color) || !nonblank(Size) || variant.sku !== `${designId}-${Color}-${Size}` || skus.has(variant.sku)) return null;
+    if (!nonblank(Color) || !nonblank(Size) || variant.sku !== mockupifyInitialSku(designId, Color, Size) || skus.has(variant.sku)) return null;
     skus.add(variant.sku);
     return mockupifyDigest({ options, price: decimal(variant.price) });
   }).sort();

@@ -133,6 +133,18 @@ Publication is checked through the Shopify APP publication connection. The worke
 
 For a binding after the interval, use the separate [product binding review](product-bindings.md). Have the owner review the exact export-to-Shopify GID and Master Input row linkage, the timestamped original Shopify publication and variant evidence for that GID, and fresh read-only publication and product evidence. If the original state cannot be established or the evidence conflicts, keep the binding on hold. Record the reviewed evidence reference with the owner's approval. The binding workflow still checks the live row and current Shopify snapshot.
 
+## Phase 22A initial SKU replacement preview
+
+Use the existing `TEES4_DATABASE` and the approved binding ID. Configure the standard read-only Shopify credentials and Google Application Default Credentials for Master Input. For the Bold Arrow Emblem pilot, run:
+
+```powershell
+npm.cmd run --silent worker -- mockupify-sku-replacement-preview '3e66387c-df11-4d88-ba05-cd498def29cb'
+```
+
+The worker matches the binding to a validated Mockupify journal with settled claims and a recorded finished export for the same shop, Shopify Product GID, design and source row. It checks the live Master Input row and compares two full Shopify reads against the approved binding snapshot. The preview requires an Active product with the exact lowercase `adjust` tag and every reviewed variant present. Color must be option 1 and Size option 2. Each current SKU must exactly match its Mockupify design ID, Color and Size. Base SKUs, Hextom-transformed SKUs, duplicate values and drift block the entire preview.
+
+The output lists each eligible variant's GID, Color, Size, current SKU, and proposed base SKU from column H. During the 4:20 PM inclusive to 9:10 PM exclusive America/Chicago protected window, the same inventory is marked `DEFERRED_PROTECTED_WINDOW` and includes the window end. The preview opens SQLite read-only, performs provider reads, and always sets `executionAuthorized` to `false`. Eligibility describes the observed state. Any future write needs separate authorization and immediate safety checks.
+
 ## Backup and restoration
 
 Keep the operation journal and binding registry together under the same `TEES4_DATABASE` path. The CLI uses SQLite's online backup API to snapshot the whole database, including committed WAL contents. Supply a new path on access-controlled storage. This uses no additional service.

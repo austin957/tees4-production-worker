@@ -32,6 +32,7 @@ const help = `Tees-4 Production Worker
   effects
   binding-list
   binding-inspect <binding-id>
+  mockupify-sku-replacement-preview <binding-id> [--header-row <number>]
   binding-propose <assignment.json> --by <operator>
   binding-review <binding-id> approve --by <owner> --source <evidence-ref> [--header-row <number>]
   binding-review <binding-id> reject --by <operator> --reason <reason>
@@ -171,7 +172,7 @@ async function main(): Promise<void> {
     }
     selectedArtwork = preview.artwork;
   }
-  const store = new Store(databasePath);
+  const store = new Store(databasePath, { readOnly: command === 'mockupify-sku-replacement-preview' });
   try {
     if (Object.hasOwn(bindingCommands, command)) {
       const result = await runBindingCommand(store, command, positionals, values);
