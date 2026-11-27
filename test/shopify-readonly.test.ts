@@ -238,11 +238,12 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
       ...process.env, ...env, TEES4_SHOPIFY_SHOP_ID: shopId, TEES4_DATABASE: database,
       FIXTURE_SHOPIFY_SCOPES: JSON.stringify(scopes),
     } });
-  const run = (...args: string[]) => {
-    const result = cli(config.shopId, args);
+  const runWithScopes = (scopes: string[], ...args: string[]) => {
+    const result = cli(config.shopId, args, scopes);
     assert.equal(result.status, 0, result.stderr);
     return JSON.parse(result.stdout);
   };
+  const run = (...args: string[]) => runWithScopes(['read_products'], ...args);
   const auth = cli(config.shopId, ['shopify-auth'], exportScopes);
   assert.equal(auth.status, 0, auth.stderr);
   assert.deepEqual(JSON.parse(auth.stdout), {
@@ -254,22 +255,27 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
     assert.equal(denied.status, 1);
     assert.match(denied.stderr, /SHOPIFY_PERMISSION/);
   }
-  const productWithExtraScope = cli(config.shopId, ['shopify-product', id], exportScopes);
-  assert.equal(productWithExtraScope.status, 1);
-  assert.match(productWithExtraScope.stderr, /SHOPIFY_PERMISSION/);
-  assert.equal(run('shopify-product', id).id, id);
-  assert.equal(run('shopify-variants', id).variants.length, 2);
+  for (const scopes of [['read_products'], [...exportScopes].reverse()]) {
+    assert.equal(runWithScopes(scopes, 'shopify-product', id).id, id);
+    assert.equal(runWithScopes(scopes, 'shopify-variants', id).variants.length, 2);
+    const reconciliation = runWithScopes(scopes, 'shopify-reconcile', id, '--product-sku', '000710', '--artwork-sku', '00042',
+      '--evidence-ref', 'observed-sku-only', '--row', '2', '--sheet-fixture', 'examples/reconciliation-sheet-fixture.json');
+    assert.equal(reconciliation.status, 'CANDIDATE');
+    assert.equal(reconciliation.masterInput.authoritative, false);
+    assert.equal(reconciliation.proposedBinding, null);
+  }
+  for (const scopes of [['read_publications'], ['read_products', 'write_products'], [...exportScopes, 'read_inventory'],
+    [...exportScopes, 'read_publications']]) {
+    const denied = cli(config.shopId, ['shopify-product', id], scopes);
+    assert.equal(denied.status, 1);
+    assert.match(denied.stderr, /SHOPIFY_PERMISSION/);
+  }
   assert.equal(run('shopify-adjust').count, 0);
   const matching = run('shopify-match', '--sheet-fixture', 'examples/matching-sheet-fixture.json');
   assert.equal(matching.status, 'CANDIDATE_REPORT');
   assert.equal(matching.masterInput.authoritative, false);
   assert.equal(matching.discoveredCount, 0);
   assert.equal(run('shopify-adjust', id).hasAdjustTag, false);
-  const reconciliation = run('shopify-reconcile', id, '--product-sku', '000710', '--artwork-sku', '00042',
-    '--evidence-ref', 'observed-sku-only', '--row', '2', '--sheet-fixture', 'examples/reconciliation-sheet-fixture.json');
-  assert.equal(reconciliation.status, 'CANDIDATE');
-  assert.equal(reconciliation.masterInput.authoritative, false);
-  assert.equal(reconciliation.proposedBinding, null);
   assert.equal(run('shopify-hextom-verify', id).status, 'NEEDS_RECONCILIATION');
   assert.equal(run('shopify-hextom-verify', id, '--verified-base-sku', '000710').status, 'MANUAL_REVIEW');
   const stage = run('shopify-production-audit', id, '--candidate-base-sku', '000710');
@@ -511,4 +517,15 @@ test('publication access requires the dedicated read-only scopes and complete ev
   await client.verifyExportPublicationAccess();
   assert.equal((await client.productForExport(id)).hasSalesChannelPublication, true);
   await assert.rejects(client.productForExport(id), { code: 'SHOPIFY_RESPONSE' });
+});
+
+test('publication queries require read_publications even with a cached standard read verification', async () => {
+  const { client, calls } = mocked([
+    response(grant), response({ data: identity }),
+    response({ data: { product: product([variant(1)]) } }),
+  ]);
+  assert.equal((await client.product(id)).id, id);
+  await assert.rejects(client.verifyExportPublicationAccess(), { code: 'SHOPIFY_PERMISSION' });
+  await assert.rejects(client.productForExport(id), { code: 'SHOPIFY_PERMISSION' });
+  assert.equal(calls.length, 3);
 });

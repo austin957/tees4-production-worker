@@ -9,6 +9,9 @@ const maxTagPages = 250;
 export const adjustTag = 'adjust';
 const attempts = 4;
 const maxDelayMs = 30_000;
+const productScope = 'read_products';
+const publicationScope = 'read_publications';
+const exportScopeMessage = 'Use a dedicated Shopify app installation with exactly read_products and read_publications.';
 
 interface ShopifyConnectionConfig {
   domain: string;
@@ -281,9 +284,11 @@ class ShopifyReadTransport {
     }
     if (data.currentAppInstallation === null) throw new WorkerError('SHOPIFY_PERMISSION', 'No Shopify app installation was returned.');
     const scopes = array(record(data.currentAppInstallation).accessScopes).map(scope => string(record(scope).handle));
-    const allowedScopes = this.config.exportPublicationReads ? ['read_products', 'read_publications'] : ['read_products'];
-    if (allowedScopes.some(scope => !scopes.includes(scope)) || scopes.some(scope => !allowedScopes.includes(scope))) {
-      throw new WorkerError('SHOPIFY_PERMISSION', `Use a dedicated Shopify app installation with only ${allowedScopes.join(' and ')}.`);
+    if (!scopes.includes(productScope) || new Set(scopes).size !== scopes.length ||
+      scopes.some(scope => scope !== productScope && scope !== publicationScope) ||
+      (this.config.exportPublicationReads && !scopes.includes(publicationScope))) {
+      throw new WorkerError('SHOPIFY_PERMISSION', this.config.exportPublicationReads ? exportScopeMessage :
+        'Use a dedicated Shopify app installation with exactly read_products, optionally with read_publications.');
     }
     const id = shopifyGid(shop.id, 'Shop');
     return { id, domain: this.config.domain, apiVersion: this.config.version, scopes };
@@ -298,7 +303,7 @@ export async function identifyShop(config: ShopifyConnectionConfig, fetcher?: ty
 export class ShopifyReadonlyClient {
   private readonly transport: ShopifyReadTransport;
   private readonly shopId: string;
-  private verifiedToken: string | undefined;
+  private verified: { token: string; publicationReads: boolean } | undefined;
 
   constructor(
     config: ShopifyReadConfig,
@@ -315,18 +320,22 @@ export class ShopifyReadonlyClient {
   }
 
   private async verifyToken(token: string): Promise<ShopIdentity> {
-    this.verifiedToken = undefined;
+    this.verified = undefined;
     const identity = await this.transport.readIdentity(token);
     if (identity.id !== this.shopId) {
       throw new WorkerError('SHOPIFY_SHOP_MISMATCH', 'The authenticated Shopify shop does not match the configured identity.');
     }
-    this.verifiedToken = token;
+    this.verified = { token, publicationReads: identity.scopes.includes(publicationScope) };
     return identity;
   }
 
   private async verifiedQuery(operation: Exclude<keyof typeof queries, 'identity'>, variables: Record<string, unknown>) {
     const token = await this.transport.token();
-    if (this.verifiedToken !== token) await this.verifyToken(token);
+    const publicationReads = this.verified?.token === token ? this.verified.publicationReads :
+      (await this.verifyToken(token)).scopes.includes(publicationScope);
+    if ((operation === 'exportProduct' || operation === 'checkPublicationRead') && !publicationReads) {
+      throw new WorkerError('SHOPIFY_PERMISSION', exportScopeMessage);
+    }
     return this.transport.query(token, operation, variables);
   }
 
