@@ -75,7 +75,10 @@ export class FakeMockupify {
   afterPost?: (path: string, data: unknown) => Promise<void>;
   beforeRead?: (path: string) => void;
   responseOverride?: (path: string) => Response | undefined;
-  productOverride: { status?: string; publishedAt?: string | null; vendor?: string; tags?: string[]; hasSalesChannelPublication?: boolean } = {};
+  productOverride: {
+    status?: string; publishedAt?: string | null; vendor?: string; tags?: string[];
+    hasSalesChannelPublication?: boolean; descriptionHtml?: string;
+  } = {};
   includePublicationEvidence = true;
   verifyPublicationAccess: () => Promise<void> = async () => {};
 

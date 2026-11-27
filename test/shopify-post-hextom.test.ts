@@ -123,6 +123,32 @@ test('uses approved source values after live SKU changes and verifies completion
   assert.equal(store.getProductBinding(binding.id).status, 'approved');
 });
 
+test('a Hextom description enhancement preserves the approved product identity and leaves SKU verification in effect', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const initial = { ...product([base, base], ['adjust']), descriptionHtml: '<p>Fixture artwork. Designed by Fixture Designer.</p>' };
+  const shop = { shopId: assignment.shopId, shopify: reader(initial) };
+  const binding = await proposeProductBinding(store, assignment, 'Fixture operator', shop);
+  await reviewProductBinding(store, binding.id, { action: 'approve', by: 'Fixture owner', source: 'fixture-review' }, {
+    ...shop, async readMasterInput() { return { kind: 'live', rows: [assignment] }; },
+  });
+
+  const descriptionHtml = initial.descriptionHtml + '<p>Fixture garment details added by Hextom.</p>';
+  const enhanced = { ...initial, descriptionHtml, updatedAt: '2026-11-24T13:00:00Z' };
+  const pending = await report(store, binding.id, enhanced);
+  assert.equal(pending.status, 'PRE_HEXTOM_PREPARATION');
+  assert.equal(pending.productionAudit.status, 'READY_FOR_HEXTOM');
+  assert.equal(pending.productId, initial.id);
+  assert.equal(pending.shopId, assignment.shopId);
+
+  const finished = await report(store, binding.id, { ...product([expected(0), expected(1)]), descriptionHtml });
+  assert.equal(finished.status, 'VERIFIED_COMPLETE');
+  assert.equal(finished.source.verification, 'REGISTRY_APPROVED');
+  assert.equal(finished.productId, initial.id);
+  assert.deepEqual(finished.exceptions, []);
+  assert.equal(store.getProductBinding(binding.id).status, 'approved');
+});
+
 test('reuses unchanged per-variant alerts across SQLite restarts and records only the changed exception', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'tees4-post-hextom-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

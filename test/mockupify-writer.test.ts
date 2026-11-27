@@ -582,6 +582,53 @@ test('the writer accepts a reviewed template adjust tag and rejects adjust in th
   assert.equal(plan.source.tags, 'test,audit');
 });
 
+test('preparation requires attribution in both the design description and the initial Shopify HTML', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const writer = new FakeMockupify().writer(store);
+  await assert.rejects(writer.prepare(input, { ...review, design: { ...review.design, description: 'Fixture artwork' } }, png),
+    { code: 'MOCKUPIFY_REVIEW_REQUIRED' });
+  await assert.rejects(writer.prepare(input, { ...review, product: { ...review.product, descriptionHtml: '<p>Fixture artwork</p>' } }, png),
+    { code: 'MOCKUPIFY_REVIEW_REQUIRED' });
+});
+
+test('export reconciliation requires exact initial HTML and retains the observed GID after a later description edit', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const id = await readyToExport(store, api);
+  const writer = api.writer(store);
+  await writer.dispatch(id, 'start_export', api.approve(store, id, 'start_export'));
+  api.finish();
+
+  const initialHtml = review.product.descriptionHtml;
+  for (const descriptionHtml of ['<p>Fixture artwork without attribution</p>', initialHtml.replace('<p>', '<div>').replace('</p>', '</div>')]) {
+    api.productOverride.descriptionHtml = descriptionHtml;
+    const held = await writer.reconcile(id);
+    assert.equal(held.exportStatus, 'held');
+    assert.equal(held.shopifyProductGid, null);
+    assert.deepEqual(held.observedProductGids, [productGid]);
+  }
+
+  api.productOverride.descriptionHtml = initialHtml;
+  const initial = await writer.reconcile(id);
+  assert.equal(initial.exportStatus, 'validated_for_binding_review');
+  assert.equal(initial.shopifyProductGid, productGid);
+  const initialEvidence = store.inspectMockupifyJournal(id).history.at(-1);
+  assert.partialDeepStrictEqual(initialEvidence, {
+    ready: true, verified: [{ gid: productGid, metadataMatches: true, snapshot: { descriptionHtml: initialHtml } }],
+  });
+
+  api.productOverride.descriptionHtml = initialHtml + '<p>Fixture garment details added by Hextom.</p>';
+  const later = await writer.reconcile(id);
+  assert.equal(later.exportStatus, 'held');
+  assert.deepEqual(later.observedProductGids, [productGid]);
+  assert.equal(later.plan.review.product.descriptionHtml, initialHtml);
+  const { history } = store.inspectMockupifyJournal(id);
+  assert.deepEqual(history.filter((event): event is { ready: true } =>
+    typeof event === 'object' && event !== null && 'ready' in event && event.ready === true), [initialEvidence]);
+});
+
 test('export reconciliation checks the exact reviewed Shopify tags, including adjust', async t => {
   const store = new Store(':memory:');
   t.after(() => store.close());
