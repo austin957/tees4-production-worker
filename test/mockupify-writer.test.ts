@@ -8,9 +8,96 @@ import { GoogleAuth } from 'google-auth-library';
 import { readMasterInputSupervisedRows } from '../src/google-sheets.js';
 import { pilotMockupifyDryRun } from '../src/mockupify-writer-cli.js';
 import { previewMockupifyOperation } from '../src/mockupify-writer.js';
+import { mockupifyOperations } from '../src/mockupify-writer-model.js';
 import { WorkerError } from '../src/model.js';
 import { Store } from '../src/store.js';
 import { FakeMockupify, initialTime, input, png, prepare, productGid, readyToExport, review, shop } from './mockupify-writer-fixture.js';
+
+test('pending review preserves supplied evidence and blocks previews, dispatch and durable claims', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const writer = api.writer(store);
+  const draft = { ...review, product: { ...review.product, descriptionHtml: null }, publicationSafety: null };
+  const journal = await writer.prepare(input, draft, png, 'pending_review');
+  const id = journal.plan.correlation.correlationId;
+  assert.equal(journal.registrationState, 'pending_review');
+  assert.equal(journal.plan.review.product.descriptionHtml, null);
+  assert.equal(journal.plan.review.publicationSafety, null);
+  assert.deepEqual(journal.plan.source, api.rows[0]);
+  assert.equal(journal.plan.sourceEvidence, input.source.evidence);
+  assert.deepEqual(journal.plan.artwork, input.png);
+  assert.deepEqual(journal.plan.review.product.tags, review.product.tags);
+  assert.deepEqual(await writer.prepare(input, draft, png, 'pending_review'), journal);
+  api.requests.length = 0;
+
+  for (const operation of mockupifyOperations) {
+    const approval = { operation, digest: 'f'.repeat(64), by: 'Fixture owner', evidence: 'Fixture', expiresAt: api.now + 60_000 };
+    assert.throws(() => previewMockupifyOperation(journal, operation), { code: 'MOCKUPIFY_PENDING_REVIEW' });
+    await assert.rejects(writer.dispatch(id, operation, approval, png), { code: 'MOCKUPIFY_PENDING_REVIEW' });
+  }
+  const request = { operation: 'create_batch', path: '/api/batches/', json: { name: journal.plan.correlation.batchName } } as const;
+  assert.throws(() => store.claimMockupifyOperation(journal, {
+    request, requestDigest: 'fixture', approval: {
+      operation: 'create_batch', digest: 'fixture', by: 'Fixture owner', evidence: 'Fixture', expiresAt: api.now + 60_000,
+    }, claimedAt: api.now, designId: null, state: 'dispatching',
+  }, [], () => assert.fail('Pending claims must not reach the preflight callback')), { code: 'MOCKUPIFY_PENDING_REVIEW' });
+  assert.deepEqual(api.requests, []);
+  assert.deepEqual(store.getMockupifyJournal(id), journal);
+  assert.deepEqual(store.inspectMockupifyJournal(id).history, [{
+    event: 'pending_review_registered', at: api.now,
+    unresolved: ['product.descriptionHtml', 'initialDescriptionEvidence', 'publicationSafety'],
+  }]);
+});
+
+test('finalization fills only missing evidence and keeps owner authorization separate for all three POSTs', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const writer = api.writer(store);
+  const draft = { ...review, product: { ...review.product, descriptionHtml: null }, publicationSafety: null };
+  const journal = await writer.prepare(input, draft, png, 'pending_review');
+  const id = journal.plan.correlation.correlationId;
+  const complete = { ...review, initialDescriptionEvidence: 'Fixture exact prior Shopify HTML record' };
+
+  await assert.rejects(writer.prepare(input, review, png, 'finalize'), { code: 'MOCKUPIFY_FINALIZATION_EVIDENCE' });
+  await assert.rejects(writer.prepare(input, { ...complete, product: { ...review.product, descriptionHtml: '<p>Wrong</p>' } }, png, 'finalize'),
+    { code: 'MOCKUPIFY_REVIEW_REQUIRED' });
+  await assert.rejects(writer.prepare(input, { ...complete, publicationSafety: { ...review.publicationSafety, evidence: ' ' } }, png, 'finalize'),
+    { code: 'MOCKUPIFY_PUBLICATION_SAFETY_REQUIRED' });
+  api.now = review.publicationSafety.endsAt;
+  await assert.rejects(writer.prepare(input, complete, png, 'finalize'), { code: 'MOCKUPIFY_PUBLICATION_WINDOW' });
+  api.now = initialTime;
+  await assert.rejects(writer.prepare(input, { ...complete, product: { ...complete.product, title: 'Changed title' } }, png, 'finalize'),
+    { code: 'MOCKUPIFY_FINALIZATION_CONFLICT' });
+  const original = api.rows[0]!.description;
+  api.rows[0]!.description = 'Changed since registration';
+  await assert.rejects(writer.prepare(input, complete, png, 'finalize'), { code: 'MOCKUPIFY_FINALIZATION_CONFLICT' });
+  api.rows[0]!.description = original;
+  await assert.rejects(writer.prepare(input, complete, png), { code: 'MOCKUPIFY_JOURNAL_CONFLICT' });
+  assert.deepEqual(api.posts, []);
+  assert.deepEqual(store.getMockupifyJournal(id), journal);
+
+  const finalized = await writer.prepare(input, complete, png, 'finalize');
+  assert.equal(finalized.registrationState, 'finalized');
+  assert.deepEqual(finalized.plan.review, complete);
+  assert.deepEqual(finalized.claims, {});
+  assert.equal(finalized.revision, journal.revision + 1);
+  assert.deepEqual(store.inspectMockupifyJournal(id).history.at(-1), {
+    event: 'plan_finalized', at: api.now, resolved: ['product.descriptionHtml', 'initialDescriptionEvidence', 'publicationSafety'],
+  });
+
+  let lastApproval;
+  for (const operation of mockupifyOperations) {
+    await assert.rejects(writer.dispatch(id, operation, lastApproval, png), { code: 'MOCKUPIFY_APPROVAL_REQUIRED' });
+    lastApproval = api.approve(store, id, operation);
+    assert.equal((await writer.dispatch(id, operation, lastApproval, png)).claims[operation]?.state, 'acknowledged');
+  }
+  const claimed = store.inspectMockupifyJournal(id);
+  await assert.rejects(writer.prepare(input, complete, png, 'finalize'), { code: 'MOCKUPIFY_FINALIZATION_CONFLICT' });
+  assert.deepEqual(store.inspectMockupifyJournal(id), claimed);
+  assert.deepEqual(api.posts, ['/api/batches/', '/api/designs/', '/api/exports/']);
+});
 
 test('the offline pilot dry run identifies row 9 and preserves the source artwork name and Shopify title', () => {
   const trace = pilotMockupifyDryRun();

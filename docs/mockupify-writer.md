@@ -2,7 +2,7 @@
 
 See the [Phase 21 row 9 approval record and preflight](mockupify-pilot-row-9.md) for current pilot evidence.
 
-The existing export queue uses its simulator. The supervised CLI uses the same writer and SQLite journal for the Bold Arrow Emblem pilot. Registration reads the providers and records the plan locally. A dispatch invocation needs an explicit `--execute` flag and the owner approval for one operation.
+The existing export queue uses its simulator. The supervised CLI uses the same writer and SQLite journal for the Bold Arrow Emblem pilot. Registration reads the providers and records the plan locally. The pending registration path records the evidence already available and reports what is missing. A dispatch invocation needs an explicit `--execute` flag and the owner approval for one operation.
 
 ## Windows PowerShell
 
@@ -15,16 +15,14 @@ $env:TEES4_DATABASE = 'C:\Tees4\worker.sqlite'
 $backupDirectory = 'D:\Tees4 Backups'
 $correlationId = '6b7ffdea53cc1985343b375aabac5d5c421911de79c06f45c7159868ed643eea'
 npm.cmd run --silent worker -- mockupify-writer-dry-run
-npm.cmd run --silent worker -- mockupify-writer-register '.\preparation.json' '.\review.png' '.\metadata-review.json'
+npm.cmd run --silent worker -- mockupify-writer-register-pending '.\preparation.json' '.\review.png' '.\pending-review.json'
 npm.cmd run --silent worker -- mockupify-writer-inspect $correlationId
-npm.cmd run --silent worker -- mockupify-writer-preview $correlationId create_batch
-npm.cmd run --silent worker -- mockupify-durability-verify $backupDirectory
-npm.cmd run --silent worker -- mockupify-durability-status
+npm.cmd run --silent worker -- mockupify-writer-readiness $correlationId
 ```
 
 Use the input JSON already accepted by [`mockupify-prepare`](mockupify.md#prepare-a-supervised-export). Supply the reviewed PNG whose SHA-256 is `6bae2628c23f42d960ef36e488bde69f84fe994d68e084218674b465a9354d17`. Registration reads the exact physical row and checks the approved non-library template, its Black and White selections at the catalog price of `18.99`, and the 14 reviewed color and size combinations. It preserves the live `SKU TEST` artwork name and requires `Bold Arrow Emblem` as the Mockupify design title. The expected Shopify title is supplied in the review after checking template title composition.
 
-Supply these fields in the separate metadata-review JSON. Use UTF-8 JSON and store the files in access-controlled local storage. UTF-8 with a byte-order mark is accepted.
+Supply these fields in the separate metadata-review JSON. For pending registration, use JSON `null` for any unresolved `product.title`, `product.descriptionHtml`, `product.variants`, `exclusiveBatchControlEvidence`, or `publicationSafety`. Omit `initialDescriptionEvidence` until its reference is available. If exact initial HTML is already available, include its evidence reference. The remaining fields are required. Recorded catalog prices and sizes remain separate from reviewed Shopify variant prices and options. Use UTF-8 JSON and store the files in access-controlled local storage. UTF-8 with a byte-order mark is accepted.
 
 | Field | Required value |
 | --- | --- |
@@ -32,10 +30,26 @@ Supply these fields in the separate metadata-review JSON. Use UTF-8 JSON and sto
 | `design` | Exact strings for `title`, `description`, `extra_title`, `search_tags`, `vendor`, and `extra_price`. The pilot uses an empty `extra_title`, `Family, Grandpa`, `test test` and `0.00`. Use the reviewed artwork copy and include the designer attribution in the description. |
 | `shop` | `id` and `domain` for the approved shop, with independent `connectionEvidence` linking the Mockupify account to it |
 | `product` | Exact expected Shopify `title`, initial `descriptionHtml` including attribution, `vendor`, and `status` of `ACTIVE`. See the [pilot description evidence](mockupify-pilot-row-9.md#initial-and-hextom-enhanced-descriptions). Set the `tags` array to exactly `readytobuy`, `adult`, `S105`, `adjust`, `stock`, `Family`, and `Grandpa` in any order, with each tag listed once. Provide `variants` as all 14 reviewed entries, each with an `options` object mapping exact option names to strings and a `price` string. Catalog color prices alone cannot establish final Shopify variant prices. |
+| `initialDescriptionEvidence` | Reference to the trusted record supporting the exact initial Shopify HTML. Required when finalizing a pending plan. |
 | `exclusiveBatchControlEvidence` | Evidence that this pilot has exclusive control of its isolated batch through export completion |
 | `publicationSafety` | Verified Hextom rule and safety `evidence`, interval `startsAt` and `endsAt` as Unix epoch milliseconds, and the required `minimumMinutes` for completing the export and observations |
 
 Template 10779 contributes `adjust` to the expected Shopify tags. The design upload uses `Family, Grandpa`. The template tag makes the Active product potentially eligible for Hextom publication, and the pilot still needs a verified safe interval. The complete plan, including its publication-safety interval, is bound into each operation's digest. Inspect it and review the exact preview before requesting approval. If the plan conflicts with an existing registration, stop and inspect the journal. The CLI has no plan replacement or claim reset command.
+
+### Finalize the pending plan
+
+A pending plan reserves the pilot correlation in the same SQLite journal. It produces no operation approval digest and cannot claim or dispatch any POST. Readiness uses the local journal, clock, configured export margin, and SQLite durability evidence. It lists live requirements separately because a local report cannot confirm remote batch or publication state or authenticate an owner approval.
+
+Once the missing evidence is available, copy the pending review to `metadata-review.json` and fill the unresolved values. Use the same preparation JSON and PNG. Finalization rechecks the source, artwork digest, catalog, collisions, and Shopify shop through the existing read paths. It validates the supplied metadata and verifies that the recorded publication interval has enough time left. The exact HTML and Hextom evidence still rely on the operator’s trusted records. Finalization commits a one-way state transition in SQLite, preserving the original recorded values, history and correlation. Existing claims and registered full plans cannot be replaced. Already complete evidence can still be registered directly using the original `mockupify-writer-register` command.
+
+```powershell
+npm.cmd run --silent worker -- mockupify-writer-finalize '.\preparation.json' '.\review.png' '.\metadata-review.json'
+npm.cmd run --silent worker -- mockupify-writer-readiness $correlationId
+npm.cmd run --silent worker -- mockupify-durability-status
+npm.cmd run --silent worker -- mockupify-writer-preview $correlationId create_batch
+```
+
+Use `npm.cmd run --silent worker -- mockupify-durability-verify $backupDirectory` if the durability evidence for that database is missing or expired. The finalized plan carries no owner authorizations.
 
 ### Dispatch one operation
 

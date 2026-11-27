@@ -1,11 +1,12 @@
 import { object, integer, onlyKeys, readJson, requiredText } from './config.js';
 import { assertMockupifyPng, mockupifyCorrelation, readApprovedMockupifyConfig, readMockupifyPng } from './mockupify-preparation.js';
 import { assertMockupifyPilotPlan, assertMockupifyPilotReview, mockupifyPilot, parseMockupifyReview } from './mockupify-pilot.js';
-import { mockupifyOperations } from './mockupify-writer-model.js';
+import { mockupifyOperations, unresolvedMockupifyReview } from './mockupify-writer-model.js';
 import type { MockupifyApproval, MockupifyOperation } from './mockupify-writer-model.js';
 import { previewMockupifyOperation, SupervisedMockupifyWriter } from './mockupify-writer.js';
 import type { MockupifyRecoveryEvidence } from './mockupify-writer.js';
 import { WorkerError } from './model.js';
+import { assertExportWindow } from './production-schedule.js';
 import { masterInput } from './sheets.js';
 import { ShopifyReadonlyClient, shopifyExportReadConfig } from './shopify-readonly.js';
 import { Store } from './store.js';
@@ -13,6 +14,9 @@ import { Store } from './store.js';
 export const mockupifyWriterCommands = {
   'mockupify-writer-dry-run': {},
   'mockupify-writer-register': {},
+  'mockupify-writer-register-pending': {},
+  'mockupify-writer-finalize': {},
+  'mockupify-writer-readiness': {},
   'mockupify-writer-dispatch': { execute: { type: 'boolean' } },
   'mockupify-writer-inspect': {},
   'mockupify-writer-preview': {},
@@ -109,6 +113,67 @@ function operationPreview(store: Store, id: string, operation: MockupifyOperatio
   };
 }
 
+function operationReadiness(store: Store, id: string, exportMarginMinutes: number | undefined) {
+  const journal = store.getMockupifyJournal(id);
+  const { plan, claims } = journal;
+  const registrationState = journal.registrationState ?? 'finalized';
+  const pending = registrationState === 'pending_review';
+  const missingReviewFields = pending ? unresolvedMockupifyReview(plan.review) : [];
+  const durability = plan.mode === 'production' ? store.mockupifyDurabilityStatus() : null;
+  const common = [
+    ...(pending ? ['FINALIZE_PENDING_REVIEW'] : []),
+    ...(durability?.admitted === false ? ['VERIFY_SQLITE_DURABILITY'] : []),
+  ];
+  const now = Date.now();
+  const safety = plan.review.publicationSafety;
+  const exportBlockers: string[] = [];
+  if (!safety) exportBlockers.push('SUPPLY_HEXTOM_SAFE_INTERVAL');
+  else if (now < safety.startsAt || safety.endsAt - now <= safety.minimumMinutes * 60_000) {
+    exportBlockers.push('MOCKUPIFY_PUBLICATION_WINDOW');
+  }
+  if (exportMarginMinutes === undefined) exportBlockers.push('EXPORT_MARGIN_REQUIRED');
+  try {
+    assertExportWindow(now, exportMarginMinutes);
+  } catch (error) {
+    if (!(error instanceof WorkerError)) throw error;
+    if (!exportBlockers.includes(error.code)) exportBlockers.push(error.code);
+  }
+
+  return {
+    correlationId: id, registrationState, executionAuthorized: false, checkedAt: now,
+    recordedChecks: ['MASTER_INPUT_SNAPSHOT', 'ARTWORK_SHA256', 'APPROVED_CATALOG_SELECTION', 'SHOPIFY_SHOP_IDENTITY'],
+    reviewedExpectations: ['design', 'product', 'exclusiveBatchControlEvidence', 'shop.connectionEvidence'],
+    missingReviewFields,
+    durability: durability && (durability.admitted ? { admitted: true, expiresAt: durability.expiresAt } : durability),
+    operations: Object.fromEntries(mockupifyOperations.map(operation => {
+      const claim = claims[operation];
+      if (claim) {
+        return [operation, {
+          claimState: claim.state, blockers: ['OPERATION_ALREADY_CLAIMED'],
+          requiredAtDispatch: [],
+        }] as const;
+      }
+      return [operation, {
+        claimState: null,
+        blockers: [
+          ...common,
+          ...(operation !== 'create_batch' && journal.batchId === null ? ['VERIFY_ISOLATED_BATCH'] : []),
+          ...(operation === 'start_export' && journal.designId === null ? ['VERIFY_UPLOADED_DESIGN'] : []),
+          ...(operation === 'start_export' ? exportBlockers : []),
+        ],
+        requiredAtDispatch: [
+          'FRESH_OPERATION_SPECIFIC_OWNER_APPROVAL', 'RECHECK_SOURCE_CATALOG_SHOP_AND_BINDING_CONFLICTS',
+          ...(operation === 'create_batch' ? ['NO_EXISTING_BATCH_OR_DESIGN_CORRELATION'] : []),
+          ...(operation === 'upload_design' ? ['REVIEWED_PNG_BYTES', 'CONFIRM_EMPTY_ISOLATED_BATCH'] : []),
+          ...(operation === 'start_export' ?
+            ['CONFIRM_EXCLUSIVE_BATCH_WITH_ONE_REVIEWED_DESIGN', 'VERIFY_SHOPIFY_PUBLICATION_READ_ACCESS',
+              'NO_EXISTING_EXPORT_FOR_BATCH', 'VERIFY_EXPORT_CAPACITY_QUOTA_AND_TIMING'] : ['VERIFY_MOCKUPIFY_REQUEST_QUOTA']),
+        ],
+      }] as const;
+    })),
+  };
+}
+
 export async function runMockupifyWriterCommand(
   command: string, args: string[], databasePath: string,
   { execute = false, exportMarginMinutes }: { execute?: boolean; exportMarginMinutes?: number | undefined } = {},
@@ -131,22 +196,24 @@ export async function runMockupifyWriterCommand(
     }
   }
   const env = process.env;
-  if (command === 'mockupify-writer-register') {
+  const pending = command === 'mockupify-writer-register-pending';
+  const finalize = command === 'mockupify-writer-finalize';
+  if (command === 'mockupify-writer-register' || pending || finalize) {
     if (args.length !== 3 || args.some(value => !value)) {
       throw new WorkerError('CLI_USAGE', 'Supply the preparation JSON, reviewed PNG and metadata-review JSON.');
     }
     const input = readJson(id!, 'Mockupify preparation');
     const png = readMockupifyPng(argument!);
-    const review = parseMockupifyReview(readJson(args[2]!, 'Metadata review'));
+    const review = parseMockupifyReview(readJson(args[2]!, 'Metadata review'), pending);
     assertMockupifyPilotReview(review);
     assertMockupifyPng(png, mockupifyPilot.pngSha256);
-    const store = new Store(databasePath);
+    const store = new Store(databasePath, { existing: finalize });
     try {
       const writer = new SupervisedMockupifyWriter({
         store, env, mode: 'production', shopify: new ShopifyReadonlyClient(shopifyExportReadConfig(env)),
         validatePlan: assertMockupifyPilotPlan,
       });
-      return await writer.prepare(input, review, png);
+      return await writer.prepare(input, review, png, pending ? 'pending_review' : finalize ? 'finalize' : undefined);
     } finally {
       store.close();
     }
@@ -181,6 +248,7 @@ export async function runMockupifyWriterCommand(
   try {
     if (preview) return operationPreview(store, id, mockupifyOperation(argument));
     switch (command) {
+      case 'mockupify-writer-readiness': return operationReadiness(store, id, exportMarginMinutes);
       case 'mockupify-writer-inspect': return store.inspectMockupifyJournal(id);
       case 'mockupify-writer-backup':
         await store.backupTo(id);

@@ -42,6 +42,7 @@ export interface MockupifyReview {
     status: 'ACTIVE';
   };
   exclusiveBatchControlEvidence: string;
+  initialDescriptionEvidence?: string;
   publicationSafety: {
     evidence: string;
     startsAt: number;
@@ -50,11 +51,33 @@ export interface MockupifyReview {
   };
 }
 
+export type MockupifyReviewInput = Omit<MockupifyReview, 'product' | 'publicationSafety' | 'exclusiveBatchControlEvidence'> & {
+  product: Omit<MockupifyReview['product'], 'title' | 'descriptionHtml' | 'variants'> & {
+    title: string | null;
+    descriptionHtml: string | null;
+    variants: MockupifyReview['product']['variants'] | null;
+  };
+  exclusiveBatchControlEvidence: string | null;
+  publicationSafety: MockupifyReview['publicationSafety'] | null;
+};
+
+export function unresolvedMockupifyReview(review: MockupifyReviewInput): string[] {
+  const missing: string[] = [];
+  if (review.product.descriptionHtml === null) missing.push('product.descriptionHtml');
+  if (!review.initialDescriptionEvidence?.trim()) missing.push('initialDescriptionEvidence');
+  if (review.publicationSafety === null) missing.push('publicationSafety');
+  if (review.product.title === null) missing.push('product.title');
+  if (review.product.variants === null) missing.push('product.variants');
+  if (review.exclusiveBatchControlEvidence === null) missing.push('exclusiveBatchControlEvidence');
+  return missing;
+}
+
 export interface SupervisedMockupifyPlan {
   mode: 'simulate' | 'production';
   correlation: MockupifyPreparationRecord;
   source: SupervisedSourceRow;
-  review: MockupifyReview;
+  sourceEvidence?: string;
+  review: MockupifyReviewInput;
   colors: ReturnType<typeof parseMockupifyPreparationInput>['colors'];
   catalogColors: { id: number; name: string; price: string; sizes: string[] }[];
   artwork: ReturnType<typeof parseMockupifyPreparationInput>['png'];
@@ -87,6 +110,7 @@ export interface MockupifyClaim {
 
 export interface MockupifyJournal {
   plan: SupervisedMockupifyPlan;
+  registrationState?: 'pending_review' | 'finalized';
   revision: number;
   batchId: number | null;
   designId: number | null;

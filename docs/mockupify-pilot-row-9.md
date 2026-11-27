@@ -1,6 +1,6 @@
 # Row 9 supervised pilot preflight
 
-Phase 21B cleared the Shopify publication read-access blocker. Phase 21D confirms the configured Hextom schedule timezone. The run-history display timezone and a safe interval for the pilot remain unverified. The [supervised CLI](mockupify-writer.md#windows-powershell) requires a verified Hextom-safe interval, artwork, metadata, durable storage and operation-specific approvals before dispatch.
+Phase 21B cleared the Shopify publication read-access blocker. Phase 21D confirms the configured Hextom schedule timezone. The run-history display timezone and a safe interval for the pilot remain unverified. The [supervised CLI](mockupify-writer.md#windows-powershell) can register the pilot as `pending_review` with the verified artwork, source and catalog. Finalization requires a complete review and verified Hextom-safe interval. Dispatch also requires durable storage and operation-specific approval.
 
 ## Owner approval record
 
@@ -39,7 +39,7 @@ The design copy comes from Master Input row 9.
 
 Record the exact text that will go in the Mockupify design page, including the `Tees-4` designer attribution, in `design.description`. The owner removed the garment description from Adult Tank Top template `10779`, so the initial Shopify product should contain the artwork description and attribution. Hextom adds the garment information to that description later.
 
-The review file’s `product.descriptionHtml` must be the exact **initial** HTML returned by Shopify. The confirmed plain text establishes the copy. The upload formatting and Shopify’s stored HTML still require review. Before registration, obtain a trusted pre-Hextom record of the raw Shopify Admin GraphQL `Product.descriptionHtml` for the same design payload and template settings, or obtain exact output confirmed by Mockupify for those inputs. An already enhanced product, rendered storefront text, or a sample with different inputs leaves the exact initial HTML unverified. If suitable evidence is unavailable, keep registration and batch authorization pending. [Shopify Product fields](https://shopify.dev/docs/api/admin-graphql/latest/objects/product)
+The review file’s `product.descriptionHtml` must be the exact **initial** HTML returned by Shopify. The confirmed plain text establishes the copy. The upload formatting and Shopify’s stored HTML still require review. Before finalization, obtain a trusted pre-Hextom record of the raw Shopify Admin GraphQL `Product.descriptionHtml` for the same design payload and template settings, or obtain exact output confirmed by Mockupify for those inputs. An already enhanced product, rendered storefront text, or a sample with different inputs leaves the exact initial HTML unverified. If suitable evidence is unavailable, record `product.descriptionHtml` as null and keep the plan pending. [Shopify Product fields](https://shopify.dev/docs/api/admin-graphql/latest/objects/product)
 
 After a separately authorized export, use `mockupify-writer-reconcile` during the verified safe interval, before Hextom runs. It reads the exact export-returned Product GID and compares its raw HTML, other reviewed metadata, variants, and publication state. `mockupify-writer-inspect` exposes the recorded Shopify snapshots. A later read of Hextom-enhanced HTML cannot establish that the initial HTML matched. A later `held` result from export reconciliation reflects the current initial-export checks, while the observed GID and earlier evidence remain in the journal. For an approved binding, use `shopify-post-hextom` for the later SKU stage. It uses the bound shop and Product GIDs, variant SKUs and `adjust` state. Description enhancement alone establishes neither a different product identity nor Hextom SKU completion. Binding rechecks still require the saved Shopify snapshot to match the current snapshot. A stale snapshot calls for fresh review of the same GID and source linkage.
 
@@ -68,6 +68,16 @@ The configured **7:00 PM America/Chicago** run falls within the protected window
 Before any future dispatch, use read-only evidence to confirm the run-history display timezone, reconcile the historical starts with the configured schedule, and check for queued or running instances. Verify the earliest eligible run and record a safe interval with explicit start and end times and the minimum time needed for export and observation. The entire test must finish before any eligible publication run. Hold if timing, eligibility, or the full interval remains unverified. Keep the Hextom task enabled with its existing configuration. Separately, the daily protected window remains **4:20 PM inclusive to 9:10 PM exclusive America/Chicago**, with the configured export safety margin before cutoff. [Hextom scheduled tasks](https://bpe-help-center.hextom.com/article/732-tutorials-on-using-scheduled-tasks-bpe)
 
 Read the APP publication connection for the exact exported Shopify Product GID immediately after export, during the supervised test, and again before the verified interval ends. Include current and staged publications. Hold if any are observed, publication evidence is unavailable, or the interval expires before completion. An empty publication read describes only that moment. Confirm the product's disposition with the owner before any separately authorized cleanup.
+
+## Pending registration and operation requirements
+
+Use `mockupify-writer-register-pending` to record the verified facts and reviewed values in SQLite, then `mockupify-writer-readiness` to list the remaining requirements. The current missing evidence includes the raw initial Shopify HTML and its evidence reference, and the verified Hextom-safe interval. Leave the expected Shopify title, final variant details or exclusive batch control evidence null as well if they are unconfirmed. Finalize to make the following operations individually eligible for approval.
+
+| Operation | Requirements before dispatch |
+| --- | --- |
+| `create_batch` | Finalized plan, current durability admission, fresh source, catalog, shop and binding checks, no existing batch or design correlation, quota, and owner approval for the exact batch request |
+| `upload_design` | Finalized plan, current durability admission, verified empty isolated batch, exact reviewed PNG and upload metadata, fresh checks and quota, and separate owner approval |
+| `start_export` | Finalized plan, current durability admission, exactly one verified design in the exclusive batch, no existing export, fresh Shopify publication read access, available export capacity and quota, a verified Hextom-safe interval and configured margin outside the protected hours, and separate owner approval |
 
 ## Operation previews
 

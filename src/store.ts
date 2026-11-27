@@ -7,7 +7,7 @@ import { integer, object, onlyKeys } from './config.js';
 import { databaseIdentity, durabilityStatus, sqliteBackupTo, verifyDurability } from './mockupify-durability.js';
 import type { GarmentCompletionTarget, SheetsCompletionAdapter } from './garment-completion.js';
 import type { MockupifyPreparationRecord } from './mockupify-preparation.js';
-import { mockupifyDigest } from './mockupify-writer-model.js';
+import { mockupifyDigest, unresolvedMockupifyReview } from './mockupify-writer-model.js';
 import type { MockupifyClaim, MockupifyJournal, SupervisedMockupifyPlan } from './mockupify-writer-model.js';
 import { parseExportEvidence } from './mockupify.js';
 import type { ExportJob, ExportPlan } from './mockupify.js';
@@ -135,24 +135,62 @@ export class Store {
     };
   }
 
-  registerMockupifyPlan(plan: SupervisedMockupifyPlan): MockupifyJournal {
+  registerMockupifyPlan(plan: SupervisedMockupifyPlan, pendingAt?: number): MockupifyJournal {
     return this.transaction(() => {
       const { correlationId, productSku } = plan.correlation;
       this.assertMockupifyBindingClear(plan);
       const journal: MockupifyJournal = {
-        plan, revision: 0, batchId: null, designId: null, exportId: null, exportTerminal: false,
+        plan, ...(pendingAt === undefined ? {} : { registrationState: 'pending_review' as const }),
+        revision: 0, batchId: null, designId: null, exportId: null, exportTerminal: false,
         exportStatus: 'unobserved', observedProductGids: [], shopifyProductGid: null, claims: {},
       };
       const result = this.db.prepare(`
         INSERT INTO mockupify_writer_journal (correlation_id, product_sku, body) VALUES (?, ?, ?)
         ON CONFLICT(correlation_id) DO NOTHING
       `).run(correlationId, productSku, JSON.stringify(journal));
-      if (result.changes === 1) return journal;
+      if (result.changes === 1) {
+        if (pendingAt !== undefined) {
+          this.db.prepare('INSERT INTO mockupify_writer_events (correlation_id, body) VALUES (?, ?)')
+            .run(correlationId, JSON.stringify({ event: 'pending_review_registered', at: pendingAt,
+              unresolved: unresolvedMockupifyReview(plan.review) }));
+        }
+        return journal;
+      }
       const existing = this.getMockupifyJournal(correlationId);
-      if (mockupifyDigest(existing.plan) !== mockupifyDigest(plan)) {
+      if ((existing.registrationState === 'pending_review') !== (pendingAt !== undefined) ||
+        mockupifyDigest(existing.plan) !== mockupifyDigest(plan)) {
         throw new WorkerError('MOCKUPIFY_JOURNAL_CONFLICT', 'A different supervised plan already owns this Product SKU.');
       }
       return existing;
+    });
+  }
+
+  finalizeMockupifyPlan(plan: SupervisedMockupifyPlan, at: number): MockupifyJournal {
+    return this.transaction(() => {
+      const current = this.getMockupifyJournal(plan.correlation.correlationId);
+      if (current.registrationState !== 'pending_review' || Object.keys(current.claims).length ||
+        current.batchId !== null || current.designId !== null || current.exportId !== null ||
+        current.exportStatus !== 'unobserved' || current.observedProductGids.length) {
+        throw new WorkerError('MOCKUPIFY_FINALIZATION_CONFLICT', 'Only an untouched pending-review plan can be finalized.');
+      }
+      if (unresolvedMockupifyReview(plan.review).length) {
+        throw new WorkerError('MOCKUPIFY_FINALIZATION_EVIDENCE', 'Finalization requires all outstanding review evidence.');
+      }
+      const expected = structuredClone(current.plan);
+      expected.review.product.descriptionHtml ??= plan.review.product.descriptionHtml;
+      expected.review.product.title ??= plan.review.product.title;
+      expected.review.product.variants ??= plan.review.product.variants;
+      expected.review.exclusiveBatchControlEvidence ??= plan.review.exclusiveBatchControlEvidence;
+      expected.review.publicationSafety ??= plan.review.publicationSafety;
+      if (plan.review.initialDescriptionEvidence !== undefined) {
+        expected.review.initialDescriptionEvidence ??= plan.review.initialDescriptionEvidence;
+      }
+      if (mockupifyDigest(expected) !== mockupifyDigest(plan)) {
+        throw new WorkerError('MOCKUPIFY_FINALIZATION_CONFLICT', 'Finalization changed recorded source, artwork, catalog or review values.');
+      }
+      this.assertMockupifyBindingClear(plan);
+      return this.saveMockupifyJournal({ ...current, plan, registrationState: 'finalized' },
+        { event: 'plan_finalized', at, resolved: unresolvedMockupifyReview(current.plan.review) });
     });
   }
 
@@ -197,6 +235,9 @@ export class Store {
     return this.transaction(() => {
       const operation = claim.request.operation;
       const current = this.getMockupifyJournal(journal.plan.correlation.correlationId);
+      if (current.registrationState === 'pending_review') {
+        throw new WorkerError('MOCKUPIFY_PENDING_REVIEW', 'A pending-review plan cannot claim a POST.');
+      }
       if (current.revision !== journal.revision || current.claims[operation]) {
         throw new WorkerError('MOCKUPIFY_ALREADY_CLAIMED', 'An existing claim or journal change requires inspection before dispatch.');
       }

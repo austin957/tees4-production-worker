@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { integer, object, onlyKeys, requiredText } from './config.js';
 import { WorkerError } from './model.js';
-import type { MockupifyReview, SupervisedMockupifyPlan } from './mockupify-writer-model.js';
+import type { MockupifyReviewInput, SupervisedMockupifyPlan } from './mockupify-writer-model.js';
 import { masterInput } from './sheets.js';
 
 export const mockupifyPilot = {
@@ -37,16 +37,19 @@ function exactText(value: unknown, label: string): string {
   return value;
 }
 
-export function parseMockupifyReview(value: unknown): MockupifyReview {
+export function parseMockupifyReview(value: unknown, pending = false): MockupifyReviewInput {
   const review = section(value, [
     'artworkRegistryName', 'artworkNameResolution', 'designerAttribution', 'design', 'shop', 'product',
-    'exclusiveBatchControlEvidence', 'publicationSafety',
+    'exclusiveBatchControlEvidence', 'publicationSafety', 'initialDescriptionEvidence',
   ], 'Metadata review');
   const design = section(review.design, ['title', 'description', 'extra_title', 'search_tags', 'vendor', 'extra_price'], 'Design review');
   const shop = section(review.shop, ['id', 'domain', 'connectionEvidence'], 'Shop review');
   const product = section(review.product, ['title', 'descriptionHtml', 'vendor', 'tags', 'variants', 'status'], 'Product review');
-  const safety = section(review.publicationSafety, ['evidence', 'startsAt', 'endsAt', 'minimumMinutes'], 'Publication safety');
-  if (product.status !== 'ACTIVE' || !Array.isArray(product.tags) || !Array.isArray(product.variants)) {
+  const safety = pending && review.publicationSafety === null ? null :
+    section(review.publicationSafety, ['evidence', 'startsAt', 'endsAt', 'minimumMinutes'], 'Publication safety');
+  const variants = product.variants;
+  if (product.status !== 'ACTIVE' || !Array.isArray(product.tags) || (variants !== null && !Array.isArray(variants)) ||
+    (!pending && variants === null)) {
     throw new WorkerError('INVALID_INPUT', 'Supply the expected Active product status, tags and variants.');
   }
   return {
@@ -69,11 +72,12 @@ export function parseMockupifyReview(value: unknown): MockupifyReview {
       connectionEvidence: requiredText(shop.connectionEvidence, 'Mockupify shop connection evidence'),
     },
     product: {
-      title: exactText(product.title, 'Expected Shopify title'),
-      descriptionHtml: exactText(product.descriptionHtml, 'Expected Shopify descriptionHtml'),
+      title: pending && product.title === null ? null : exactText(product.title, 'Expected Shopify title'),
+      descriptionHtml: pending && product.descriptionHtml === null ? null :
+        exactText(product.descriptionHtml, 'Expected Shopify descriptionHtml'),
       vendor: exactText(product.vendor, 'Expected Shopify vendor'),
       tags: product.tags.map(tag => exactText(tag, 'Expected Shopify tag')),
-      variants: product.variants.map(entry => {
+      variants: variants === null ? null : variants.map(entry => {
         const variant = section(entry, ['options', 'price'], 'Expected Shopify variant');
         const options = object(variant.options, 'Expected Shopify variant options');
         return {
@@ -84,8 +88,12 @@ export function parseMockupifyReview(value: unknown): MockupifyReview {
       }),
       status: product.status,
     },
-    exclusiveBatchControlEvidence: requiredText(review.exclusiveBatchControlEvidence, 'Exclusive batch control evidence'),
-    publicationSafety: {
+    exclusiveBatchControlEvidence: pending && review.exclusiveBatchControlEvidence === null ? null :
+      requiredText(review.exclusiveBatchControlEvidence, 'Exclusive batch control evidence'),
+    ...(review.initialDescriptionEvidence === undefined ? {} : {
+      initialDescriptionEvidence: requiredText(review.initialDescriptionEvidence, 'Initial Shopify description evidence'),
+    }),
+    publicationSafety: safety === null ? null : {
       evidence: requiredText(safety.evidence, 'Publication safety evidence'),
       startsAt: integer(safety.startsAt, 'Publication safety startsAt', 1, Number.MAX_SAFE_INTEGER),
       endsAt: integer(safety.endsAt, 'Publication safety endsAt', 1, Number.MAX_SAFE_INTEGER),
@@ -94,14 +102,15 @@ export function parseMockupifyReview(value: unknown): MockupifyReview {
   };
 }
 
-export function assertMockupifyPilotReview(review: MockupifyReview): void {
+export function assertMockupifyPilotReview(review: MockupifyReviewInput): void {
   const pilot = mockupifyPilot;
   const { design, shop, product } = review;
   const expectedProductTags = [...pilot.designTags, ...pilot.templateTags].sort();
   if (review.artworkRegistryName !== pilot.title || review.designerAttribution !== pilot.attribution ||
     design.title !== pilot.title || design.vendor !== pilot.vendor || product.vendor !== pilot.vendor ||
     design.extra_title !== '' || design.extra_price !== '0.00' || design.search_tags !== pilot.designTags.join(', ') ||
-    !isDeepStrictEqual([...product.tags].sort(), expectedProductTags) || product.variants.length !== pilot.variantCount ||
+    !isDeepStrictEqual([...product.tags].sort(), expectedProductTags) ||
+    (product.variants !== null && product.variants.length !== pilot.variantCount) ||
     shop.id !== pilot.shopId || shop.domain !== pilot.shopDomain) {
     throw new WorkerError('MOCKUPIFY_PILOT_REVIEW_MISMATCH', 'The reviewed metadata must match the exact approved Bold Arrow Emblem pilot.');
   }
@@ -126,9 +135,10 @@ export function assertMockupifyPilotPlan(plan: SupervisedMockupifyPlan): void {
   }
   const combinations = new Set(catalogColors.flatMap(color =>
     color.sizes.map(size => JSON.stringify([color.name, size].sort()))));
-  const reviewedCombinations = new Set(review.product.variants.map(variant =>
+  const reviewedCombinations = new Set(review.product.variants?.map(variant =>
     JSON.stringify(Object.values(variant.options).sort())));
-  if (combinations.size !== pilot.variantCount || !isDeepStrictEqual(reviewedCombinations, combinations)) {
+  if (combinations.size !== pilot.variantCount ||
+    (review.product.variants !== null && !isDeepStrictEqual(reviewedCombinations, combinations))) {
     throw new WorkerError('MOCKUPIFY_PILOT_VARIANTS_MISMATCH', 'Review all 14 distinct catalog color and size combinations with their expected Shopify option names and prices.');
   }
 }

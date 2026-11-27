@@ -6,11 +6,11 @@ import {
   mockupifyOrigin, mockupifyReadOnly, mockupifyRetryDelay,
   parseBatch, parseDesignEvidence, parseExportDetail,
 } from './mockupify-readonly.js';
-import { parseMockupifyPreparationInput, prepareMockupifyExport, readApprovedMockupifyConfig } from './mockupify-preparation.js';
-import { mockupifyDigest, sha256 } from './mockupify-writer-model.js';
+import { mockupifyCorrelation, parseMockupifyPreparationInput, prepareMockupifyExport, readApprovedMockupifyConfig } from './mockupify-preparation.js';
+import { mockupifyDigest, sha256, unresolvedMockupifyReview } from './mockupify-writer-model.js';
 import type {
   MockupifyApproval, MockupifyClaim, MockupifyJournal, MockupifyOperation, MockupifyPost,
-  MockupifyReview, SupervisedMockupifyPlan, SupervisedSourceRow,
+  MockupifyReviewInput, SupervisedMockupifyPlan, SupervisedSourceRow,
 } from './mockupify-writer-model.js';
 import { assertExportWindow } from './production-schedule.js';
 import { readStableShopifyProduct, shopifyGid } from './shopify-readonly.js';
@@ -57,17 +57,17 @@ function withinPublicationWindow(plan: SupervisedMockupifyPlan, now: number) {
   return !!safety && now >= safety.startsAt && now < safety.endsAt;
 }
 
-function assertReview(source: SupervisedSourceRow, review: MockupifyReview) {
+function assertReview(source: SupervisedSourceRow, review: MockupifyReviewInput, pending = false) {
   const { design, product, shop } = review;
   if (!nonblank(source.vendor) || design.vendor !== source.vendor || product.vendor !== source.vendor) {
     stop('MOCKUPIFY_VENDOR_MISMATCH', 'The design vendor and expected Shopify vendor must exactly match the nonblank Master Input Column D vendor.');
   }
   if (!nonblank(review.artworkRegistryName) || !nonblank(review.designerAttribution) ||
     (source.sheetArtworkName !== review.artworkRegistryName && !nonblank(review.artworkNameResolution)) ||
-    !nonblank(review.exclusiveBatchControlEvidence)) {
+    (!(pending && review.exclusiveBatchControlEvidence === null) && !nonblank(review.exclusiveBatchControlEvidence))) {
     stop('MOCKUPIFY_REVIEW_REQUIRED', 'Record the reviewed artwork name, attribution, discrepancy resolution and exclusive batch control.');
   }
-  if (!publicationSafety({ review })) {
+  if (!(pending && review.publicationSafety === null) && !publicationSafety({ review })) {
     stop('MOCKUPIFY_PUBLICATION_SAFETY_REQUIRED', 'Record verified Hextom publication rule evidence and a window covering the entire pilot.');
   }
   const designKeys = ['description', 'extra_price', 'extra_title', 'search_tags', 'title', 'vendor'];
@@ -76,14 +76,16 @@ function assertReview(source: SupervisedSourceRow, review: MockupifyReview) {
       value.length <= 255 && !value.includes('\u0000')) &&
     nonblank(design.title) && design.description.includes(review.designerAttribution) &&
     !design.search_tags.split(',').some(tag => tag.trim() === 'adjust') && /^-?\d{1,8}(?:\.\d{1,2})?$/.test(design.extra_price);
-  if (!validDesign || !nonblank(product.title) || typeof product.descriptionHtml !== 'string' ||
-    !product.descriptionHtml.includes(review.designerAttribution) ||
+  const validDescription = pending && product.descriptionHtml === null ||
+    typeof product.descriptionHtml === 'string' && product.descriptionHtml.includes(review.designerAttribution);
+  const variants = product.variants;
+  const validVariants = pending && variants === null || Array.isArray(variants) && variants.length > 0 &&
+    variants.every(variant => /^\d+(?:\.\d{1,2})?$/.test(variant.price) &&
+      Object.keys(variant.options).length > 0 && Object.entries(variant.options).every(([name, value]) => nonblank(name) && nonblank(value))) &&
+    new Set(variants.map(variant => mockupifyDigest(variant.options))).size === variants.length;
+  if (!validDesign || (!(pending && product.title === null) && !nonblank(product.title)) || !validDescription ||
     product.status !== 'ACTIVE' || !Array.isArray(product.tags) || !product.tags.every(nonblank) ||
-    new Set(product.tags).size !== product.tags.length ||
-    !Array.isArray(product.variants) || product.variants.length === 0 ||
-    product.variants.some(variant => !/^\d+(?:\.\d{1,2})?$/.test(variant.price) ||
-      !Object.keys(variant.options).length || Object.entries(variant.options).some(([name, value]) => !nonblank(name) || !nonblank(value))) ||
-    new Set(product.variants.map(variant => mockupifyDigest(variant.options))).size !== product.variants.length) {
+    new Set(product.tags).size !== product.tags.length || !validVariants) {
     stop('MOCKUPIFY_REVIEW_REQUIRED', 'Review all design fields, exact Active product metadata, prices, options and tags before dispatch.');
   }
   shopifyGid(shop.id, 'Shop');
@@ -93,6 +95,9 @@ function assertReview(source: SupervisedSourceRow, review: MockupifyReview) {
 }
 
 export function previewMockupifyOperation(journal: MockupifyJournal, operation: MockupifyOperation) {
+  if (journal.registrationState === 'pending_review') {
+    stop('MOCKUPIFY_PENDING_REVIEW', 'Finalize the pending plan before previewing or approving a POST.');
+  }
   const { plan, batchId, designId } = journal;
   const { correlation } = plan;
   let request: MockupifyPost;
@@ -151,6 +156,7 @@ function checkProduct(product: ProductRead | null, gid: string, plan: Supervised
   if (!product || product.id !== gid || product.status !== 'ACTIVE' || product.status !== plan.review.product.status ||
     product.publishedAt !== null || product.hasSalesChannelPublication !== false) return false;
   const expected = plan.review.product;
+  if (expected.variants === null) return false;
   const variants = product.variants.map(variant => {
     const entries = variant.selectedOptions.map(option => [option.name, option.value] as const);
     if (!variant.id || (variant.sku !== '' && variant.sku !== null) || !variant.price ||
@@ -243,16 +249,31 @@ export class SupervisedMockupifyWriter {
     return source;
   }
 
-  async prepare(input: unknown, review: MockupifyReview, png: Uint8Array): Promise<MockupifyJournal> {
+  async prepare(input: unknown, review: MockupifyReviewInput, png: Uint8Array,
+    registration?: 'pending_review' | 'finalize'): Promise<MockupifyJournal> {
     if (this.mode === 'dry_run') stop('MOCKUPIFY_DRY_RUN', 'Dry-run mode does not register a dispatchable plan.');
     const prepared = parseMockupifyPreparationInput(input);
+    if (registration === 'finalize') {
+      const { correlationId } = mockupifyCorrelation(prepared.source.spreadsheetId, prepared.source.productSku);
+      if (this.options.store.getMockupifyJournal(correlationId).registrationState !== 'pending_review') {
+        stop('MOCKUPIFY_FINALIZATION_CONFLICT', 'Only an existing pending-review plan can be finalized.');
+      }
+    }
     const source = await this.verifySource(prepared.source);
     const { spreadsheetId: _spreadsheet, evidence: _evidence, ...expected } = prepared.source;
     if (!Object.entries(expected).every(([key, value]) => source[key as keyof SupervisedSourceRow] === value)) {
       stop('MOCKUPIFY_SOURCE_CHANGED', 'The supplied preparation does not match the current physical row.');
     }
     const reviewed = structuredClone(review);
-    assertReview(source, reviewed);
+    if (registration === 'finalize') {
+      const missing = unresolvedMockupifyReview(reviewed);
+      if (missing.length) stop('MOCKUPIFY_FINALIZATION_EVIDENCE', `Supply the remaining evidence for ${missing.join(', ')}.`);
+    }
+    assertReview(source, reviewed, registration === 'pending_review');
+    if (registration === 'pending_review' && reviewed.product.descriptionHtml !== null &&
+      !nonblank(reviewed.initialDescriptionEvidence)) {
+      stop('MOCKUPIFY_FINALIZATION_EVIDENCE', 'Record the evidence reference for the exact initial Shopify HTML.');
+    }
     const approved = readApprovedMockupifyConfig();
     const catalog = await this.reads.listProducts();
     const batches = await this.reads.listBatches();
@@ -264,10 +285,19 @@ export class SupervisedMockupifyWriter {
     const template = catalog.find(entry => entry.id === report.correlation.mockupifyTemplateId)!;
     const selectedColors = prepared.colors.map(color => template.colors.find(entry => entry.id === color.mockupifyColorId)!);
     const plan = { mode: this.mode, correlation: report.correlation, source, review: reviewed,
-      artwork: prepared.png, colors: prepared.colors, catalogColors: selectedColors };
+      artwork: prepared.png, colors: prepared.colors, catalogColors: selectedColors,
+      ...(registration ? { sourceEvidence: prepared.source.evidence } : {}) };
     this.options.validatePlan?.(plan);
     await this.verifyShop(plan);
-    return this.options.store.registerMockupifyPlan(plan);
+    const now = this.clock();
+    if (registration === 'finalize') {
+      const safety = publicationSafety(plan);
+      if (!safety || safety.endsAt - Math.max(now, safety.startsAt) <= safety.minimumMinutes * 60_000) {
+        stop('MOCKUPIFY_PUBLICATION_WINDOW', 'The verified Hextom-safe interval has too little time left to finalize this pilot.');
+      }
+      return this.options.store.finalizeMockupifyPlan(plan, now);
+    }
+    return this.options.store.registerMockupifyPlan(plan, registration === 'pending_review' ? now : undefined);
   }
 
   private async verifyPlanSource(plan: SupervisedMockupifyPlan) {

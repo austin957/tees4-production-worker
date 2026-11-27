@@ -45,6 +45,9 @@ const help = `Tees-4 Production Worker
   mockupify-export <export-id>
   mockupify-writer-dry-run
   mockupify-writer-register <preparation.json> <review.png> <metadata-review.json>
+  mockupify-writer-register-pending <preparation.json> <review.png> <pending-review.json>
+  mockupify-writer-finalize <preparation.json> <review.png> <metadata-review.json>
+  mockupify-writer-readiness <correlation-id>
   mockupify-writer-dispatch <correlation-id> <create_batch|upload_design|start_export>
     [--execute <owner-approval.json> [review.png for upload_design]]
   mockupify-writer-inspect <correlation-id>

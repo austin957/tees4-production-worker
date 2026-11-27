@@ -68,6 +68,48 @@ function pilotFixture() {
   return { api, source, correlation, catalogColors, metadata, colors, artwork, preparation };
 }
 
+test('pending CLI accepts explicit unresolved values and reports operation blockers without modifying SQLite', async t => {
+  const { database, json, artwork } = localFiles(t);
+  const { metadata, preparation } = pilotFixture();
+  const draft = { ...metadata, product: { ...metadata.product, descriptionHtml: null, title: null, variants: null },
+    publicationSafety: null, exclusiveBatchControlEvidence: null };
+  const files = [json('preparation.json', preparation), artwork, json('pending review.json', draft)];
+  await assert.rejects(runMockupifyWriterCommand('mockupify-writer-register-pending', files, database),
+    { code: 'MOCKUPIFY_PNG_EVIDENCE_MISMATCH' });
+  await assert.rejects(runMockupifyWriterCommand('mockupify-writer-finalize', files, database), { code: 'INVALID_INPUT' });
+
+  const store = new Store(database);
+  try {
+    const pending = await new FakeMockupify().writer(store).prepare(input, {
+      ...review, product: { ...review.product, descriptionHtml: null, title: null, variants: null },
+      publicationSafety: null, exclusiveBatchControlEvidence: null,
+    }, png, 'pending_review');
+    const id = pending.plan.correlation.correlationId;
+    const before = store.inspectMockupifyJournal(id);
+    const result = spawnSync(process.execPath, [
+      '--disable-warning=ExperimentalWarning', 'dist/src/cli.js', 'mockupify-writer-readiness', id,
+    ], { env: { ...process.env, TEES4_DATABASE: database, TEES4_MOCKUPIFY_API_KEY: '' }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const readiness = JSON.parse(result.stdout);
+    assert.equal(readiness.registrationState, 'pending_review');
+    assert.equal(readiness.executionAuthorized, false);
+    assert.deepEqual(readiness.missingReviewFields, [
+      'product.descriptionHtml', 'initialDescriptionEvidence', 'publicationSafety', 'product.title', 'product.variants',
+      'exclusiveBatchControlEvidence',
+    ]);
+    for (const operation of mockupifyOperations) {
+      assert.ok(readiness.operations[operation].blockers.includes('FINALIZE_PENDING_REVIEW'));
+      assert.ok(readiness.operations[operation].requiredAtDispatch.includes('FRESH_OPERATION_SPECIFIC_OWNER_APPROVAL'));
+    }
+    assert.ok(readiness.operations.upload_design.blockers.includes('VERIFY_ISOLATED_BATCH'));
+    assert.ok(readiness.operations.start_export.blockers.includes('VERIFY_UPLOADED_DESIGN'));
+    assert.ok(readiness.operations.start_export.blockers.includes('SUPPLY_HEXTOM_SAFE_INTERVAL'));
+    assert.deepEqual(store.inspectMockupifyJournal(id), before);
+  } finally {
+    store.close();
+  }
+});
+
 test('the worker CLI prints exact local previews for all three operations with no credentials', async t => {
   const { database } = localFiles(t);
   const store = new Store(database);
@@ -138,28 +180,12 @@ test('registration requires the exact combined Shopify tags while preserving the
 });
 
 test('production CLI requires a separate unexpired approval, durable storage and a fresh source before one batch claim', async t => {
-  const { directory, database, json, artwork: wrongPng } = localFiles(t);
-  const fixture = pilotFixture();
-  const { api, source, correlation, catalogColors, metadata, colors, artwork } = fixture;
+  const { directory, database, json, artwork } = localFiles(t);
+  t.mock.property(mockupifyPilot, 'pngSha256', input.png.preparedSha256);
+  const { api, source, correlation, metadata, preparation } = pilotFixture();
   const id = correlation.correlationId;
-  const template = api.catalog.find(product => product.id === mockupifyPilot.templateId)!;
-  // Obtain the usual mapping fingerprint from the simulated preparation without the pilot artwork.
-  // The on-disk production fixture is seeded with the approved digest. The actual pilot PNG is private.
-  const store = new Store(database);
-  try {
-    const ordinary = new FakeMockupify();
-    const { plan } = await ordinary.writer(store).prepare(input, review, png);
-    store.registerMockupifyPlan({
-      mode: 'production', source, review: metadata, catalogColors, artwork, colors,
-      correlation: {
-        ...plan.correlation, ...correlation, sourceRow: source.sourceRow, productSku: source.productSku,
-        artworkSku: source.artworkSku, mockupifyTemplateId: template.id,
-        mockupifyColorIds: colors.map(color => color.mockupifyColorId), preparedArtworkSha256: artwork.preparedSha256,
-      },
-    });
-  } finally {
-    store.close();
-  }
+  const wrongPng = join(directory, 'different.png');
+  writeFileSync(wrongPng, Buffer.concat([png, Buffer.from([0])]));
 
   for (const [key, value] of Object.entries({
     TEES4_MOCKUPIFY_API_KEY: 'synthetic-mockupify-token',
@@ -195,7 +221,7 @@ test('production CLI requires a separate unexpired approval, durable storage and
   });
   const headers = ['Artwork Name(From Google Drive)', 'Product Title', 'Product Description', 'Vendor', 'Product',
     'Colors', 'Tags', 'Product SKU', 'Tees-4 Completed', '', 'Artwork SKU'];
-  let currentDescription = 'Stale fixture description';
+  let currentDescription = source.description;
   const auth = t.mock.method(GoogleAuth.prototype, 'getClient', async () => ({
     request: async ({ url, method }: { url: string; method: string }) => {
       assert.equal(method, 'GET');
@@ -205,6 +231,28 @@ test('production CLI requires a separate unexpired approval, durable storage and
       return { data: { values: [headers, ...Array.from({ length: source.sourceRow - 2 }, () => []), cells] } };
     },
   }));
+
+  const preparationPath = json('preparation.json', preparation);
+  const register = (command: string, value: unknown) => runMockupifyWriterCommand(command,
+    [preparationPath, artwork, json('metadata review.json', value)], database);
+  const pending = await register('mockupify-writer-register-pending', {
+    ...metadata, product: { ...metadata.product, title: null, descriptionHtml: null, variants: null },
+    exclusiveBatchControlEvidence: null, publicationSafety: null,
+  });
+  assert.ok(pending && 'registrationState' in pending);
+  assert.equal(pending.registrationState, 'pending_review');
+  const now = Date.now();
+  const finalized = await register('mockupify-writer-finalize', {
+    ...metadata, initialDescriptionEvidence: 'Synthetic exact HTML record',
+    publicationSafety: { ...metadata.publicationSafety, startsAt: now, endsAt: now + 3_600_000 },
+  });
+  assert.ok(finalized && 'claims' in finalized);
+  assert.equal(finalized.registrationState, 'finalized');
+  assert.deepEqual(finalized.claims, {});
+  assert.deepEqual(api.posts, []);
+  currentDescription = 'Stale fixture description';
+  fetch.mock.resetCalls();
+  auth.mock.resetCalls();
 
   function approval(operation: MockupifyOperation) {
     const reader = new Store(database, { readOnly: true });
@@ -232,6 +280,13 @@ test('production CLI requires a separate unexpired approval, durable storage and
   assert.equal(auth.mock.callCount(), 0);
 
   await runMockupifyWriterCommand('mockupify-durability-verify', [directory], database);
+  const readiness = await runMockupifyWriterCommand('mockupify-writer-readiness', [id], database);
+  assert.ok(readiness && 'operations' in readiness);
+  assert.equal(readiness.durability?.admitted, true);
+  assert.deepEqual(readiness.operations.create_batch?.blockers, []);
+  assert.deepEqual(readiness.operations.upload_design?.blockers, ['VERIFY_ISOLATED_BATCH']);
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(auth.mock.callCount(), 0);
   await assert.rejects(dispatch(['create_batch', validPath]), { code: 'MOCKUPIFY_SOURCE_CHANGED' });
   assert.equal(fetch.mock.callCount(), 0);
   assert.equal(auth.mock.callCount(), 1);
