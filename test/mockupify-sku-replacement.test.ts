@@ -528,14 +528,24 @@ const skuWriterEnv = {
   TEES4_SHOPIFY_SKU_WRITE_INSTALLATION_ID: skuWriterInstallation,
 };
 
-async function liveExecutionFixture(t: TestContext, path?: string) {
+const singleAppWriterEnv = {
+  ...skuWriterEnv,
+  TEES4_SHOPIFY_SKU_WRITE_CLIENT_ID: skuWriterEnv.TEES4_SHOPIFY_CLIENT_ID,
+  TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET: skuWriterEnv.TEES4_SHOPIFY_CLIENT_SECRET,
+  TEES4_SHOPIFY_SKU_WRITE_ALLOW_SINGLE_APP: 'true',
+};
+
+async function liveExecutionFixture(t: TestContext, { path, env = skuWriterEnv }: {
+  path?: string; env?: typeof skuWriterEnv;
+} = {}) {
   const fixture = await executionFixture(t, path);
   const { id, store, evidence, plan, correlationId, requests, apply } = fixture;
   const { history } = store.inspectMockupifyJournal(correlationId);
   const observation = history.find(event => event && typeof event === 'object' &&
     'event' in event && event.event === 'mockupify_export_read') as { detail: ReturnType<typeof parseExportDetail> };
   let now = fixture.clock();
-  let scopes = ['write_products'];
+  let scopes = ['read_products', 'read_publications', 'write_products'];
+  let authenticatedShop = { id: shop.id, myshopifyDomain: shop.domain };
   let installationId = skuWriterInstallation;
   let result = (request: SkuRequest): Response => shopifyResponse({
     data: { productVariantsBulkUpdate: { product: { id: productGid }, productVariants: apply(request), userErrors: [] } },
@@ -568,8 +578,8 @@ async function liveExecutionFixture(t: TestContext, path?: string) {
     if (String(url) === `https://${shop.domain}/admin/oauth/access_token`) {
       calls.push('token');
       const params = new URLSearchParams(String(init?.body));
-      assert.equal(params.get('client_id'), skuWriterEnv.TEES4_SHOPIFY_SKU_WRITE_CLIENT_ID);
-      assert.equal(params.get('client_secret'), skuWriterEnv.TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET);
+      assert.equal(params.get('client_id'), env.TEES4_SHOPIFY_SKU_WRITE_CLIENT_ID);
+      assert.equal(params.get('client_secret'), env.TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET);
       return Response.json({ access_token: 'fixture-writer-token', expires_in: 3600 });
     }
     assert.equal(String(url), `https://${shop.domain}/admin/api/${skuWriterApiVersion}/graphql.json`);
@@ -577,7 +587,7 @@ async function liveExecutionFixture(t: TestContext, path?: string) {
     const request = JSON.parse(String(init?.body)) as SkuRequest;
     if (request.query.startsWith('query Tees4SkuWriteIdentity')) {
       calls.push('identity');
-      return shopifyResponse({ data: { shop: { id: shop.id, myshopifyDomain: shop.domain },
+      return shopifyResponse({ data: { shop: authenticatedShop,
         currentAppInstallation: { id: installationId, accessScopes: scopes.map(handle => ({ handle })) } } });
     }
     calls.push('mutation');
@@ -587,9 +597,10 @@ async function liveExecutionFixture(t: TestContext, path?: string) {
   const approveLive = () => approveSkuReplacement(store, id, plan.id, 'Fixture owner', 'Fixture live approval', evidence, clock, true);
   const run = (approvalSequence: number, overrides: Partial<typeof liveEvidence> = {}, execute = true, planId = plan.id) =>
     executeSkuReplacement(store, { execute, bindingId: id, planId, approvalSequence }, { ...liveEvidence, ...overrides },
-      shopifySkuWriter(skuWriterEnv, fetcher, clock), clock);
+      shopifySkuWriter(env, fetcher, clock), clock);
   return { ...fixture, liveEvidence, run, approveLive, pause, calls, clock,
     setTime: (value: number) => { now = value; }, setScopes: (value: string[]) => { scopes = value; },
+    setShop: (value: typeof authenticatedShop) => { authenticatedShop = value; },
     setInstallation: (value: string) => { installationId = value; }, setResult: (value: typeof result) => { result = value; } };
 }
 
@@ -612,11 +623,48 @@ test('live path authenticates the separate installation and sends exactly the ap
   assert.equal(events[3]?.event === 'readback' && events[3].hextomPauseVerified, true);
 });
 
-test('live path rejects an inexact, simulated or expired approval without contacting Shopify', async t => {
-  const f = await liveExecutionFixture(t);
+test('shared writer credentials require an explicit opt-in and a complete matching pair', () => {
+  const noFetch: typeof fetch = async () => assert.fail('Unexpected Shopify request');
+  for (const flag of [undefined, 'false', 'TRUE', '1']) {
+    assert.throws(() => shopifySkuWriter({ ...singleAppWriterEnv, TEES4_SHOPIFY_SKU_WRITE_ALLOW_SINGLE_APP: flag }, noFetch),
+      { code: 'SKU_EXECUTION_INSTALLATION_UNAUTHORIZED' });
+  }
+  for (const overrides of [
+    { TEES4_SHOPIFY_SKU_WRITE_CLIENT_ID: skuWriterEnv.TEES4_SHOPIFY_SKU_WRITE_CLIENT_ID },
+    { TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET: skuWriterEnv.TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET },
+    { TEES4_SHOPIFY_SKU_WRITE_INSTALLATION_ID: 'gid://shopify/Shop/124' },
+  ]) {
+    assert.throws(() => shopifySkuWriter({ ...singleAppWriterEnv, ...overrides }, noFetch),
+      { code: 'SKU_EXECUTION_INSTALLATION_UNAUTHORIZED' });
+  }
+});
+
+test('single-app live path verifies and journals one exact 14-variant dispatch and readback', async t => {
+  const f = await liveExecutionFixture(t, { env: singleAppWriterEnv });
+  const { approvalSequence } = await f.approveLive();
+  assert.equal((await f.run(approvalSequence)).status, 'VERIFIED_COMPLETE');
+  assert.equal(f.requests[0]?.variables.variants.length, 14);
+  assert.deepEqual(f.requests, [f.dryRun.request]);
+  assert.deepEqual(f.calls, ['token', 'identity', 'export', 'source', 'source', 'product', 'product', 'mutation', 'product', 'product']);
+  const { events } = f.store.shopifySkuJournal.inspect(f.plan.id);
+  assert.deepEqual(events.map(entry => entry.event), ['approved', 'claimed', 'shopify_response', 'readback']);
+  const claim = events[1];
+  assert.equal(claim?.event === 'claimed' && claim.live?.installationId, skuWriterInstallation);
+  assert.equal(events[3]?.event === 'readback' && events[3].hextomPauseVerified, true);
+
+  const callsBeforeRepeat = f.calls.length;
+  await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_ALREADY_CLAIMED' });
+  assert.equal(f.calls.length, callsBeforeRepeat);
+  assert.equal(f.requests.length, 1);
+});
+
+test('single-app live path rejects inexact, simulated, superseded and expired approvals before contacting Shopify', async t => {
+  const f = await liveExecutionFixture(t, { env: singleAppWriterEnv });
   const simulationApproval = await f.approve();
   await assert.rejects(f.run(simulationApproval.approvalSequence), { code: 'SKU_EXECUTION_APPROVAL_MODE' });
+  const superseded = await f.approveLive();
   const approval = await f.approveLive();
+  await assert.rejects(f.run(superseded.approvalSequence), { code: 'SKU_EXECUTION_APPROVAL_CHANGED' });
   await assert.rejects(f.run(approval.approvalSequence, {}, false), { code: 'SKU_EXECUTION_APPROVAL_REQUIRED' });
   await assert.rejects(f.run(approval.approvalSequence, {}, true, '1'.repeat(64)), { code: 'SKU_EXECUTION_APPROVAL_REQUIRED' });
   f.setTime(approval.expiresAt);
@@ -624,21 +672,25 @@ test('live path rejects an inexact, simulated or expired approval without contac
   assert.deepEqual(f.calls, []);
 });
 
-test('live path verifies the acting installation ID and write_products grant', async t => {
-  const f = await liveExecutionFixture(t);
+test('single-app live path independently verifies the authenticated shop ID, domain, installation and write scope', async t => {
+  const f = await liveExecutionFixture(t, { env: singleAppWriterEnv });
   const { approvalSequence } = await f.approveLive();
-  f.setScopes(['read_products']);
+  f.setShop({ id: 'gid://shopify/Shop/999', myshopifyDomain: shop.domain });
+  await assert.rejects(f.run(approvalSequence), { code: 'SHOPIFY_SHOP_MISMATCH' });
+  f.setShop({ id: shop.id, myshopifyDomain: 'other.myshopify.com' });
+  await assert.rejects(f.run(approvalSequence), { code: 'SHOPIFY_SHOP_MISMATCH' });
+  f.setShop({ id: shop.id, myshopifyDomain: shop.domain });
+  f.setScopes(['read_products', 'read_publications']);
   await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_WRITE_SCOPE_REQUIRED' });
-  f.setScopes(['write_products']);
+  f.setScopes(['read_products', 'read_publications', 'write_products']);
   f.setInstallation('gid://shopify/AppInstallation/125');
   await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_INSTALLATION_UNAUTHORIZED' });
-  f.setScopes(['read_products', 'read_publications', 'write_products']);
-  await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_INSTALLATION_UNAUTHORIZED' });
-  assert.deepEqual(f.calls, ['token', 'identity', 'token', 'identity', 'token', 'identity']);
+  assert.deepEqual(f.calls, ['token', 'identity', 'token', 'identity', 'token', 'identity', 'token', 'identity']);
+  assert.equal(f.requests.length, 0);
 });
 
-test('live path stops on missing, stale, mismatched or withdrawn Hextom pause evidence', async t => {
-  const f = await liveExecutionFixture(t);
+test('single-app live path stops on missing, expired, mismatched or withdrawn Hextom pause evidence', async t => {
+  const f = await liveExecutionFixture(t, { env: singleAppWriterEnv });
   const { approvalSequence } = await f.approveLive();
   for (const pause of [null, { ...f.pause, paused: false }, { ...f.pause, productId: 'gid://shopify/Product/9' },
     { ...f.pause, holdUntil: f.clock() }]) {
@@ -665,8 +717,8 @@ test('live readback holds an acknowledged result when the Hextom pause expires d
   assert.equal(f.requests.length, 1);
 });
 
-test('live path blocks the protected window and rechecks the cutoff immediately before dispatch', async t => {
-  const f = await liveExecutionFixture(t);
+test('single-app live path blocks the protected window and rechecks the cutoff immediately before dispatch', async t => {
+  const f = await liveExecutionFixture(t, { env: singleAppWriterEnv });
   const cutoff = Date.parse('2026-11-27T22:20:00Z');
   const end = Date.parse('2026-11-28T03:10:00Z');
   const prepare = async (at: number) => {
@@ -718,7 +770,7 @@ test('live path holds partial mutation results and requires explicit read-only r
 
 test('live path retains the exclusive claim after a connection interruption and restart', async t => {
   const path = databasePath(t);
-  const f = await liveExecutionFixture(t, path);
+  const f = await liveExecutionFixture(t, { path });
   const { approvalSequence } = await f.approveLive();
   f.setResult(request => {
     f.apply(request);
@@ -734,7 +786,7 @@ test('live path retains the exclusive claim after a connection interruption and 
 });
 
 test('live mutation transport does not retry a throttled response', async t => {
-  const f = await liveExecutionFixture(t);
+  const f = await liveExecutionFixture(t, { env: singleAppWriterEnv });
   const { approvalSequence } = await f.approveLive();
   f.setResult(() => shopifyResponse({ errors: [{ extensions: { code: 'THROTTLED' } }] }, 429));
   await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_RECONCILIATION_REQUIRED' });

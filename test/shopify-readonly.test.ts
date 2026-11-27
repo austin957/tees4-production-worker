@@ -237,6 +237,10 @@ test('all Shopify CLI paths stay read-only during the protected window', t => {
       '--disable-warning=ExperimentalWarning', '--import', pathToFileURL(preload).href, 'dist/src/cli.js', ...args,
     ], { encoding: 'utf8', env: {
       ...process.env, ...env, TEES4_SHOPIFY_SHOP_ID: shopId, TEES4_DATABASE: database,
+      TEES4_SHOPIFY_SKU_WRITE_ALLOW_SINGLE_APP: 'true',
+      TEES4_SHOPIFY_SKU_WRITE_CLIENT_ID: env.TEES4_SHOPIFY_CLIENT_ID,
+      TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET: env.TEES4_SHOPIFY_CLIENT_SECRET,
+      TEES4_SHOPIFY_SKU_WRITE_INSTALLATION_ID: 'gid://shopify/AppInstallation/1',
       FIXTURE_SHOPIFY_SCOPES: JSON.stringify(scopes),
     } });
   const runWithScopes = (scopes: string[], ...args: string[]) => {

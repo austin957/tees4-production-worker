@@ -176,7 +176,7 @@ Live execution also requires a product-specific Hextom pause through readback an
 
 ## Phase 22C gated live SKU adapter
 
-Point `TEES4_DATABASE` at the existing pilot database and configure the standard read-only Shopify installation, Google Application Default Credentials, and `TEES4_MOCKUPIFY_API_KEY`. From the built project, verify the pilot with:
+Point `TEES4_DATABASE` at the existing pilot database and configure standard Shopify read access, Google Application Default Credentials, and `TEES4_MOCKUPIFY_API_KEY`. From the built project, verify the pilot with:
 
 ```sh
 npm run --silent worker -- mockupify-sku-replacement-run 3e66387c-df11-4d88-ba05-cd498def29cb
@@ -186,7 +186,26 @@ The default mode opens SQLite read-only, checks the live Master Input row and st
 
 For an owner-authorized run, the owner separately records a live approval for that exact plan with `mockupify-sku-replacement-approve` and `--for-live`. That approval expires after 15 minutes. The live run requires `--execute`, the exact `--plan-id`, and the corresponding `--approval-sequence`. It blocks dispatch from 4:20 PM inclusive through 9:10 PM exclusive America/Chicago and rechecks the window after committing the SQLite claim.
 
-Set `TEES4_SHOPIFY_SKU_WRITE_CLIENT_ID`, `TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET`, and `TEES4_SHOPIFY_SKU_WRITE_INSTALLATION_ID` for a separately owner-authorized writer. The last value is the authorized `gid://shopify/AppInstallation/<id>`. Before dispatch the writer exchanges its own credentials for a token and queries the authenticated shop GID and domain, current app installation GID, and granted `write_products` scope. The mutation uses that verified token. There are no scope-change or installation operations.
+### Configure the SKU writer installation
+
+By default, both writer credentials must differ from the standard Shopify credentials. To use the existing Tees-4 Production Worker app and installation for both roles, configure these runtime values through the operator's secret mechanism.
+
+| Environment variable | Single-app value |
+| --- | --- |
+| `TEES4_SHOPIFY_DOMAIN` | Existing canonical `*.myshopify.com` shop domain |
+| `TEES4_SHOPIFY_SHOP_ID` | Existing verified `gid://shopify/Shop/<id>` |
+| `TEES4_SHOPIFY_CLIENT_ID` | Existing Tees-4 Production Worker app Client ID |
+| `TEES4_SHOPIFY_CLIENT_SECRET` | Existing Tees-4 Production Worker app Client Secret |
+| `TEES4_SHOPIFY_SKU_WRITE_ALLOW_SINGLE_APP` | Literal lowercase `true` |
+| `TEES4_SHOPIFY_SKU_WRITE_CLIENT_ID` | Same value as `TEES4_SHOPIFY_CLIENT_ID` |
+| `TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET` | Same value as `TEES4_SHOPIFY_CLIENT_SECRET` |
+| `TEES4_SHOPIFY_SKU_WRITE_INSTALLATION_ID` | Independently verified `gid://shopify/AppInstallation/<id>` for that app on the configured shop |
+
+The shared installation must have `read_products`, `read_publications`, and `write_products` for the full workflow. An unset flag or any value other than `true` blocks shared credentials. A match on just one credential is rejected in either configuration. Before dispatch, the writer runs its own credential exchange and checks the authenticated shop GID and domain, current app installation GID, and granted `write_products` scope. The mutation uses the token from that verified exchange.
+
+Shopify tokens issued to the shared app carry its granted write scope, including tokens acquired by normal worker commands. The normal Shopify client sends only fixed read queries. Within the worker, only the supervised SKU execution pathway can send the SKU mutation, and it still requires all existing plan, owner approval, Hextom, window, journal, and readback checks. Anyone who obtains the shared credentials can use the app's Shopify permissions outside the worker, so restrict access to both credential variables and keep their values out of the repository, shell history, and logs. The single-app flag authorizes credential reuse only.
+
+### Verify the Hextom pause
 
 Set `TEES4_HEXTOM_SKU_PAUSE_FILE` to an access-controlled JSON evidence file maintained by the operator responsible for Hextom. The operator must independently verify that SKU processing, including any pending or in-flight Hextom work, is paused for the specific product and can be kept paused through Shopify readback. Record that observation and hold using these fields:
 
@@ -199,7 +218,7 @@ Set `TEES4_HEXTOM_SKU_PAUSE_FILE` to an access-controlled JSON evidence file mai
 
 This is an operator attestation from Hextom. The operator must withdraw the evidence if the hold is no longer in effect. The worker checks the same unexpired evidence before dispatch and on both sides of Shopify readback, and journals the evidence with the claim. Changed, missing, or expired evidence blocks dispatch or holds completion. The clock and Shopify's `adjust` tag cannot confirm a Hextom pause.
 
-The mutation is sent once with `allowPartialUpdates: false`. The response must acknowledge every exact variant and target SKU before automatic readback. For errors, timeouts, partial acknowledgment, or failed readback, use `mockupify-sku-replacement-reconcile <plan-id>` to observe the product and journal the results using the read-only Shopify installation. Reconciliation preserves the exclusive claim and does not resend a mutation or substitute for missing Hextom evidence at readback.
+The mutation is sent once with `allowPartialUpdates: false`. The response must acknowledge every exact variant and target SKU before automatic readback. For errors, timeouts, partial acknowledgment, or failed readback, use `mockupify-sku-replacement-reconcile <plan-id>` to observe the product and journal the results using the read-only Shopify client. Reconciliation preserves the exclusive claim and does not resend a mutation or substitute for missing Hextom evidence at readback.
 
 ## Backup and restoration
 

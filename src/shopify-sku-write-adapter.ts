@@ -53,9 +53,15 @@ export function shopifySkuWriter(env: NodeJS.ProcessEnv, fetcher = fetch, clock 
     TEES4_SHOPIFY_CLIENT_SECRET: env.TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET,
   });
   const installationId = requiredText(env.TEES4_SHOPIFY_SKU_WRITE_INSTALLATION_ID, 'SKU writer app installation GID');
-  if (reader.clientId === config.clientId || reader.clientSecret === config.clientSecret ||
-    !/^gid:\/\/shopify\/AppInstallation\/[1-9][0-9]*$/.test(installationId)) {
-    throw new WorkerError('SKU_EXECUTION_INSTALLATION_UNAUTHORIZED', 'Configure a separately authorized SKU writer installation.');
+  const sameClientId = reader.clientId === config.clientId;
+  const sameClientSecret = reader.clientSecret === config.clientSecret;
+  const allowSingleApp = env.TEES4_SHOPIFY_SKU_WRITE_ALLOW_SINGLE_APP === 'true';
+  if ((sameClientId || sameClientSecret) && !(allowSingleApp && sameClientId && sameClientSecret)) {
+    throw new WorkerError('SKU_EXECUTION_INSTALLATION_UNAUTHORIZED',
+      'Use distinct writer credentials or enable TEES4_SHOPIFY_SKU_WRITE_ALLOW_SINGLE_APP=true with a fully matching credential pair.');
+  }
+  if (!/^gid:\/\/shopify\/AppInstallation\/[1-9][0-9]*$/.test(installationId)) {
+    throw new WorkerError('SKU_EXECUTION_INSTALLATION_UNAUTHORIZED', 'Configure the authorized SKU writer app installation GID.');
   }
   let grant: Awaited<ReturnType<typeof authorizeShopifySkuWriter>> | undefined;
   return {

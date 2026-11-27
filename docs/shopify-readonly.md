@@ -18,7 +18,9 @@ The worker uses Shopify's GraphQL Admin API to inspect products by their authori
 | `TEES4_SHOPIFY_CLIENT_SECRET` | Dev Dashboard app secret supplied securely at runtime |
 | `TEES4_SHOPIFY_API_VERSION` | Optional quarterly version override. This phase targets `2026-10` |
 
-The client exchanges app credentials at the shop's OAuth token endpoint. It keeps the expiring token in memory only. Requests use HTTPS, reject redirects, and send only fixed GraphQL queries. The client verifies shop identity and app scopes before retrieving a product. Shopify SKU mutations require the separate Phase 22C writer authorization, including the exact authorized app installation GID. It retries transient failures within a bounded budget and respects HTTP `Retry-After` and GraphQL throttle information. CLI errors omit credential values, tokens, and raw response bodies.
+The client exchanges app credentials at the shop's OAuth token endpoint. It keeps the expiring token in memory only. Requests use HTTPS, reject redirects, and send only fixed GraphQL queries, including when the app has `write_products` and single-app mode is enabled. The client verifies shop identity and app scopes before retrieving a product. It retries transient read failures within a bounded budget and respects HTTP `Retry-After` and GraphQL throttle information. CLI errors omit credential values, tokens, and raw response bodies.
+
+Shopify SKU mutations require Phase 22C writer authorization, including the exact authorized app installation GID. The operator can explicitly opt in to sharing the existing Shopify app across the read client and SKU writer. [SKU writer configuration](mockupify-writer.md#configure-the-sku-writer-installation)
 
 ## Bootstrap a missing Shop GID
 
