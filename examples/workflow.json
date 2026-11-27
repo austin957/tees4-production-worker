@@ -1,0 +1,16 @@
+{
+  "id": "phase-1-demo",
+  "maxAttempts": 3,
+  "retryDelayMs": 1000,
+  "leaseMs": 30000,
+  "stages": [
+    { "id": "validate-artwork", "kind": "validate" },
+    { "id": "read-artwork", "kind": "action", "action": "drive.readArtwork" },
+    { "id": "read-sku", "kind": "action", "action": "sheets.readAssignment" },
+    { "id": "read-designer", "kind": "action", "action": "affiliatePortal.readSubmission" },
+    { "id": "generate-mockup", "kind": "action", "action": "mockupify.generate" },
+    { "id": "create-product-draft", "kind": "action", "action": "shopify.create" },
+    { "id": "approve-publication", "kind": "approval" },
+    { "id": "publish-product", "kind": "action", "action": "shopify.publish" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "batchId": "fixture-batch-1",
+  "templates": {
+    "Tee": {
+      "templateId": "fixture-adult-tee",
+      "colors": { "White": "fixture-tee-white", "Black": "fixture-tee-black" }
+    },
+    "Hoodie": {
+      "templateId": "fixture-hoodie",
+      "colors": { "Navy": "fixture-hoodie-navy" }
+    }
+  }
+}

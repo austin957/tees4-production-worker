@@ -1,0 +1,21 @@
+{
+  "provenance": {
+    "kind": "fixture",
+    "reference": "synthetic-matching-example-v1",
+    "spreadsheetId": "1UxdIY03ICu5t2G0fEo0nor6-giAEF4xdMuNEvYN_JMM",
+    "tab": "Master Input"
+  },
+  "rows": [
+    {
+      "rowNumber": 2,
+      "title": "Fixture Product",
+      "vendor": "Fixture Vendor",
+      "garment": "Tee",
+      "colors": "White, Black",
+      "tags": "Nurses",
+      "completion": null,
+      "productSku": "000710",
+      "artworkSku": "00042"
+    }
+  ]
+}

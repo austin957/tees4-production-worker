@@ -1,0 +1,21 @@
+[
+  {
+    "id": "fixture-product-101",
+    "artworkSku": "00042",
+    "productSku": "000710",
+    "variants": [
+      { "id": "fixture-variant-201", "size": "S", "color": "White", "sku": null },
+      { "id": "fixture-variant-202", "size": "M", "color": "White", "sku": null },
+      { "id": "fixture-variant-203", "size": "M", "color": "Black", "sku": "existing-sku-preserve-exactly" }
+    ]
+  },
+  {
+    "id": "fixture-product-102",
+    "artworkSku": "00042",
+    "productSku": "000711",
+    "variants": [
+      { "id": "fixture-variant-204", "size": "S", "color": "Navy", "sku": null },
+      { "id": "fixture-variant-205", "size": "M", "color": "Navy", "sku": "000711" }
+    ]
+  }
+]

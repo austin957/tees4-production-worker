@@ -1,0 +1,15 @@
+[
+  {
+    "shopId": "gid://shopify/Shop/1",
+    "id": "gid://shopify/Product/2",
+    "sourceRow": 2,
+    "artworkSku": "00042",
+    "productSku": "000710",
+    "mockupifyExportRef": "fixture-export",
+    "optionNames": { "size": "Size", "color": "Color" },
+    "variants": [
+      { "id": "gid://shopify/ProductVariant/3", "size": "M", "color": "White" },
+      { "id": "gid://shopify/ProductVariant/4", "size": "L", "color": "Black" }
+    ]
+  }
+]

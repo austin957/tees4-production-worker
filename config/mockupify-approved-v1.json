@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "revision": "phase-19-v1",
+  "approval": {
+    "scope": "exact_garment_template_mappings_only",
+    "evidence": "Phase 19 owner-provided instructions, 2026-11-25",
+    "source": "user_instruction",
+    "independentlyAuthenticated": false,
+    "fingerprint": "6dfd718603d1c2dd6c562338a412a05b4a484a4312359b7b23423a731bd82967"
+  },
+  "observedBatch": {
+    "id": 6100,
+    "name": "Design Input"
+  },
+  "mappings": [
+    {
+      "garment": "Adult Shirt",
+      "templateId": 10679,
+      "templateTitle": "Tee",
+      "templateType": "Unisex T-Shirt"
+    },
+    {
+      "garment": "Youth Shirt",
+      "templateId": 10680,
+      "templateTitle": "Youth Tee",
+      "templateType": "T-Shirt"
+    },
+    {
+      "garment": "Adult Sweatshirt",
+      "templateId": 10681,
+      "templateTitle": "Hoodie",
+      "templateType": "Unisex Hoodie"
+    },
+    {
+      "garment": "Youth Sweatshirt",
+      "templateId": 10682,
+      "templateTitle": "Youth Hoodie",
+      "templateType": "Youth Hoodie"
+    },
+    {
+      "garment": "Adult LongSleeve Shirt",
+      "templateId": 10683,
+      "templateTitle": "Long Sleeve Tee",
+      "templateType": "Unisex Long Sleeve T-Shirt"
+    },
+    {
+      "garment": "Adult Tank Top",
+      "templateId": 10779,
+      "templateTitle": "Adult Tank Top",
+      "templateType": "Tank Top"
+    },
+    {
+      "garment": "Women's Shirt",
+      "templateId": 10684,
+      "templateTitle": "Women's Tee",
+      "templateType": "Women's T-Shirt"
+    }
+  ]
+}

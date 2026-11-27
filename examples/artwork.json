@@ -1,0 +1,7 @@
+{
+  "artworkId": "example-artwork-001",
+  "artworkRef": "fixture://drive/example-artwork-001.svg",
+  "designerId": "example-designer-001",
+  "sku": "EXAMPLE-SKU-001",
+  "productTitle": "Example Tees-4 Shirt"
+}
