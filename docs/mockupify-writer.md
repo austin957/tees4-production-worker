@@ -155,7 +155,7 @@ npm.cmd run --silent worker -- mockupify-sku-replacement-dry-run '3e66387c-df11-
 
 The dry-run returns the reviewed variant IDs, exact Color and Size, initial Mockupify SKUs, and the identical proposed base SKU on each row. It also prints the Shopify request it would use and the SHA-256 plan ID. SQLite is opened read-only. Google Sheets and Shopify are queried read-only. Mockupify provenance comes from the validated export already in SQLite.
 
-The owner reviews the complete plan and can record a separate SKU execution approval in SQLite by supplying its exact ID, their name, and the approval evidence reference. Keep that evidence in the operator's approval record. A binding approval only establishes the source assignment. When recording a SKU approval, the worker regenerates the plan using current evidence and requires the same SHA-256 ID. The approval expires after 15 minutes. A newer approval for that plan supersedes the prior approval sequence. For this release the simulation is the only consumer of the approval.
+The owner reviews the complete plan and can record a separate SKU execution approval in SQLite by supplying its exact ID, their name, and the approval evidence reference. Keep that evidence in the operator's approval record. A binding approval only establishes the source assignment. When recording a SKU approval, the worker regenerates the plan using current evidence and requires the same SHA-256 ID. The approval expires after 15 minutes. A newer approval for that plan supersedes the prior approval sequence. An approval recorded without `--for-live` applies to the Phase 22B simulation.
 
 ```powershell
 npm.cmd run --silent worker -- mockupify-sku-replacement-approve '<binding-id>' '<plan-id>' --by '<owner>' --source '<SKU execution approval evidence>'
@@ -164,7 +164,7 @@ npm.cmd run --silent worker -- mockupify-sku-replacement-inspect '<plan-id>'
 
 The simulation checks the approval, shop identity, and write scope, repeats the Phase 22A evidence validation, reads all product variants twice as its last remote preflight, and verifies the exact plan again. It requires positive confirmation of a Hextom pause. The lowercase `adjust` tag and original SKUs do not establish that pause. It checks the clock immediately before dispatch and holds from 4:20 PM inclusive to 9:10 PM exclusive America/Chicago. The first SKU approval adds journal tables to the existing database. An existing Mockupify durability receipt is tied to the previous schema version and needs re-verification after this migration if you use the supervised Mockupify writer again.
 
-Shopify supports a synchronous `productVariantsBulkUpdate` for one product. The 14 variants fit in its 250-item input limit. The worker sends only the product GID and each variant GID with `inventoryItem.sku`. It sets `allowPartialUpdates: false` so validation errors reject the whole request. The response includes returned variant IDs and SKUs plus `userErrors` with code, input field path, and message. The minimum scope for a later authorized adapter is `write_products`, and Shopify also requires the acting user to have permission to update product variants. The current installation and requested scopes are unchanged. This release supplies no live Shopify write transport or execution command. [Shopify mutation](https://shopify.dev/docs/api/admin-graphql/2026-10/mutations/productVariantsBulkUpdate) [SKU input](https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/InventoryItemInput) [Input limits](https://shopify.dev/docs/api/usage/limits#input-limits)
+Shopify supports a synchronous `productVariantsBulkUpdate` for one product. The 14 variants fit in its 250-item input limit. The worker sends only the product GID and each variant GID with `inventoryItem.sku`. It sets `allowPartialUpdates: false` so validation errors reject the whole request. The response includes returned variant IDs and SKUs plus `userErrors` with code, input field path, and message. The minimum mutation scope is `write_products`. Shopify also requires permission to update product variants. [Shopify mutation](https://shopify.dev/docs/api/admin-graphql/2026-10/mutations/productVariantsBulkUpdate) [SKU input](https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/InventoryItemInput) [Input limits](https://shopify.dev/docs/api/usage/limits#input-limits)
 
 A dispatch claim is committed before sending and is exclusive for the shop and product, even across different plan IDs and worker processes sharing the database. The journal stores the approval, dispatch, available Shopify response or error, and per-variant readback. If a response is lost or a worker stops after claiming, an original SKU seen afterward does not prove the request failed to run. A partial result is also held since it conflicts with the requested all-or-none behavior. Recovery reads the complete product again, records what is already at target or original and flags missing, duplicate or unexpected variants. An unexpected SKU or missing `adjust` tag holds for possible Hextom activity. Recovery sends no updates and never releases an uncertain claim for replay. Duplicate base SKUs are intentional for the pilot. Shopify documents uniqueness requirements for certain integrations such as Shopify Fulfillment Network, and acceptance by the pilot store has not been tested. [Shopify SKU guidance](https://help.shopify.com/en/manual/products/details/sku)
 
@@ -172,7 +172,34 @@ A dispatch claim is committed before sending and is exclusive for the shop and p
 npm.cmd run --silent worker -- mockupify-sku-replacement-reconcile '<plan-id>'
 ```
 
-A later live activation needs separate authorization, a verified Hextom pause that remains in effect through readback, and coordination with other Shopify editors. The documented mutation takes no expected-current-SKU condition, so a Shopify read followed by this mutation cannot prevent an external edit between requests. The SQLite claim coordinates workers sharing that database.
+Live execution also requires a product-specific Hextom pause through readback and coordination with other Shopify editors. The documented mutation takes no expected-current-SKU condition, so a Shopify read followed by this mutation cannot prevent an external edit between requests. The SQLite claim coordinates workers sharing that database.
+
+## Phase 22C gated live SKU adapter
+
+Point `TEES4_DATABASE` at the existing pilot database and configure the standard read-only Shopify installation, Google Application Default Credentials, and `TEES4_MOCKUPIFY_API_KEY`. From the built project, verify the pilot with:
+
+```sh
+npm run --silent worker -- mockupify-sku-replacement-run 3e66387c-df11-4d88-ba05-cd498def29cb
+```
+
+The default mode opens SQLite read-only, checks the live Master Input row and stable Shopify product snapshot, and reads Mockupify export `20208` via GET to confirm the recorded provenance. It prints the immutable plan ID and the 14 proposed changes for product `gid://shopify/Product/10467506880803` and base SKU `8419620257-S105`. It uses the existing read-only Shopify credentials.
+
+For an owner-authorized run, the owner separately records a live approval for that exact plan with `mockupify-sku-replacement-approve` and `--for-live`. That approval expires after 15 minutes. The live run requires `--execute`, the exact `--plan-id`, and the corresponding `--approval-sequence`. It blocks dispatch from 4:20 PM inclusive through 9:10 PM exclusive America/Chicago and rechecks the window after committing the SQLite claim.
+
+Set `TEES4_SHOPIFY_SKU_WRITE_CLIENT_ID`, `TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET`, and `TEES4_SHOPIFY_SKU_WRITE_INSTALLATION_ID` for a separately owner-authorized writer. The last value is the authorized `gid://shopify/AppInstallation/<id>`. Before dispatch the writer exchanges its own credentials for a token and queries the authenticated shop GID and domain, current app installation GID, and granted `write_products` scope. The mutation uses that verified token. There are no scope-change or installation operations.
+
+Set `TEES4_HEXTOM_SKU_PAUSE_FILE` to an access-controlled JSON evidence file maintained by the operator responsible for Hextom. The operator must independently verify that SKU processing, including any pending or in-flight Hextom work, is paused for the specific product and can be kept paused through Shopify readback. Record that observation and hold using these fields:
+
+| Field | Value |
+| --- | --- |
+| `shopId`, `productId` | Exact Shopify Shop and Product GIDs |
+| `paused` | JSON boolean `true` |
+| `verifiedBy`, `source` | Verifier and reference to the independent Hextom evidence |
+| `verifiedAt`, `holdUntil` | UTC epoch milliseconds for the observation and end of the verified hold, at most 15 minutes apart |
+
+This is an operator attestation from Hextom. The operator must withdraw the evidence if the hold is no longer in effect. The worker checks the same unexpired evidence before dispatch and on both sides of Shopify readback, and journals the evidence with the claim. Changed, missing, or expired evidence blocks dispatch or holds completion. The clock and Shopify's `adjust` tag cannot confirm a Hextom pause.
+
+The mutation is sent once with `allowPartialUpdates: false`. The response must acknowledge every exact variant and target SKU before automatic readback. For errors, timeouts, partial acknowledgment, or failed readback, use `mockupify-sku-replacement-reconcile <plan-id>` to observe the product and journal the results using the read-only Shopify installation. Reconciliation preserves the exclusive claim and does not resend a mutation or substitute for missing Hextom evidence at readback.
 
 ## Backup and restoration
 

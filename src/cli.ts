@@ -34,7 +34,8 @@ const help = `Tees-4 Production Worker
   binding-inspect <binding-id>
   mockupify-sku-replacement-preview <binding-id> [--header-row <number>]
   mockupify-sku-replacement-dry-run <binding-id> [--header-row <number>]
-  mockupify-sku-replacement-approve <binding-id> <plan-id> --by <owner> --source <evidence-ref> [--header-row <number>]
+  mockupify-sku-replacement-run <binding-id> [--execute --plan-id <plan-id> --approval-sequence <number>] [--header-row <number>]
+  mockupify-sku-replacement-approve <binding-id> <plan-id> --by <owner> --source <evidence-ref> [--for-live] [--header-row <number>]
   mockupify-sku-replacement-inspect <plan-id>
   mockupify-sku-replacement-reconcile <plan-id>
   binding-propose <assignment.json> --by <operator>
@@ -177,8 +178,10 @@ async function main(): Promise<void> {
     selectedArtwork = preview.artwork;
   }
   const skuReplacement = command.startsWith('mockupify-sku-replacement-');
+  const skuJournalWrites = ['mockupify-sku-replacement-approve', 'mockupify-sku-replacement-reconcile'].includes(command) ||
+    (command === 'mockupify-sku-replacement-run' && values.execute === true);
   const store = new Store(databasePath, {
-    readOnly: skuReplacement && !['mockupify-sku-replacement-approve', 'mockupify-sku-replacement-reconcile'].includes(command),
+    readOnly: skuReplacement && !skuJournalWrites,
     existing: skuReplacement,
   });
   try {

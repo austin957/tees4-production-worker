@@ -6,10 +6,12 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
+import type { parseExportDetail } from '../src/mockupify-readonly.js';
 import { previewMockupifySkuReplacement } from '../src/mockupify-sku-replacement.js';
 import { mockupifyOperations } from '../src/mockupify-writer-model.js';
 import { masterInput } from '../src/sheets.js';
-import { approveSkuReplacement, dryRunSkuReplacement, reconcileSkuReplacement, simulateSkuReplacement } from '../src/shopify-sku-execution.js';
+import { approveSkuReplacement, dryRunSkuReplacement, executeSkuReplacement, reconcileSkuReplacement, simulateSkuReplacement } from '../src/shopify-sku-execution.js';
+import { shopifySkuWriter } from '../src/shopify-sku-write-adapter.js';
 import type { SimulatedSkuWriter } from '../src/shopify-sku-write-adapter.js';
 import { WorkerError } from '../src/model.js';
 import type { ProductRead } from '../src/shopify-readonly.js';
@@ -491,7 +493,7 @@ test('first SKU approval adds an immutable journal and preserves an existing reg
   assert.ok((await store.verifyMockupifyDurability(dirname(path))).admitted);
 });
 
-test('Phase 22B commands expose no execution switch and dry-run cannot create a database', t => {
+test('the SKU CLI defaults to read-only verification and requires explicit live flags', t => {
   const path = databasePath(t);
   const run = (...args: string[]) => spawnSync(process.execPath, [
     '--disable-warning=ExperimentalWarning', 'dist/src/cli.js', ...args,
@@ -499,10 +501,255 @@ test('Phase 22B commands expose no execution switch and dry-run cannot create a 
   assert.match(run('mockupify-sku-replacement-execute', 'fixture-binding').stderr, /CLI_USAGE/);
   assert.match(run('mockupify-sku-replacement-dry-run', 'fixture-binding', '--execute').stderr, /CLI_USAGE/);
   assert.match(run('mockupify-sku-replacement-dry-run', 'fixture-binding').stderr, /DATABASE_OPEN/);
+  assert.match(run('mockupify-sku-replacement-run', 'fixture-binding').stderr, /DATABASE_OPEN/);
   assert.match(run('mockupify-sku-replacement-approve', 'fixture-binding', 'fixture-plan', '--by', 'owner', '--source', 'review').stderr, /DATABASE_OPEN/);
   assert.equal(existsSync(path), false);
   const store = new Store(path);
   store.close();
+  assert.match(run('mockupify-sku-replacement-run', 'fixture-binding', '--execute').stderr, /CLI_USAGE/);
+  assert.match(run('mockupify-sku-replacement-run', 'fixture-binding', '--plan-id', 'fixture-plan').stderr, /CLI_USAGE/);
+  assert.match(run('mockupify-sku-replacement-run', 'fixture-binding', '--execute',
+    '--plan-id', '0'.repeat(64), '--approval-sequence', '1').stderr, /SKU_EXECUTION_PLAN_CHANGED/);
   const inspect = run('mockupify-sku-replacement-inspect', 'fixture-plan');
   assert.match(inspect.stderr, /SKU_EXECUTION_APPROVAL_REQUIRED/);
+});
+
+type SkuRequest = Parameters<SimulatedSkuWriter['updateSkus']>[0];
+const skuWriterApiVersion = '2026-10';
+const skuWriterInstallation = 'gid://shopify/AppInstallation/124';
+const skuWriterEnv = {
+  TEES4_SHOPIFY_SHOP_ID: shop.id,
+  TEES4_SHOPIFY_API_VERSION: skuWriterApiVersion,
+  TEES4_SHOPIFY_DOMAIN: shop.domain,
+  TEES4_SHOPIFY_CLIENT_ID: 'fixture-reader',
+  TEES4_SHOPIFY_CLIENT_SECRET: 'fixture-reader-secret',
+  TEES4_SHOPIFY_SKU_WRITE_CLIENT_ID: 'fixture-writer',
+  TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET: 'fixture-writer-secret',
+  TEES4_SHOPIFY_SKU_WRITE_INSTALLATION_ID: skuWriterInstallation,
+};
+
+async function liveExecutionFixture(t: TestContext, path?: string) {
+  const fixture = await executionFixture(t, path);
+  const { id, store, evidence, plan, correlationId, requests, apply } = fixture;
+  const { history } = store.inspectMockupifyJournal(correlationId);
+  const observation = history.find(event => event && typeof event === 'object' &&
+    'event' in event && event.event === 'mockupify_export_read') as { detail: ReturnType<typeof parseExportDetail> };
+  let now = fixture.clock();
+  let scopes = ['write_products'];
+  let installationId = skuWriterInstallation;
+  let result = (request: SkuRequest): Response => shopifyResponse({
+    data: { productVariantsBulkUpdate: { product: { id: productGid }, productVariants: apply(request), userErrors: [] } },
+  });
+  const calls: string[] = [];
+  const clock = () => now;
+  const pause = { shopId: shop.id, productId: productGid, paused: true, verifiedBy: 'Fixture Hextom operator',
+    source: 'Fixture Hextom admin observation', verifiedAt: now, holdUntil: now + 10 * 60_000 };
+  const liveEvidence = {
+    ...evidence,
+    readPause: (): unknown => ({ ...pause }),
+    async readExport(exportId: number) {
+      calls.push('export');
+      assert.equal(exportId, observation.detail.id);
+      return structuredClone(observation.detail);
+    },
+    async readMasterInput() {
+      calls.push('source');
+      return evidence.readMasterInput();
+    },
+    shopify: { async product() {
+      calls.push('product');
+      return evidence.shopify.product();
+    } },
+  };
+  const fetcher: typeof fetch = async (url, init) => {
+    assert.equal(init?.method, 'POST');
+    assert.equal(init?.redirect, 'error');
+    assert.ok(init?.signal);
+    if (String(url) === `https://${shop.domain}/admin/oauth/access_token`) {
+      calls.push('token');
+      const params = new URLSearchParams(String(init?.body));
+      assert.equal(params.get('client_id'), skuWriterEnv.TEES4_SHOPIFY_SKU_WRITE_CLIENT_ID);
+      assert.equal(params.get('client_secret'), skuWriterEnv.TEES4_SHOPIFY_SKU_WRITE_CLIENT_SECRET);
+      return Response.json({ access_token: 'fixture-writer-token', expires_in: 3600 });
+    }
+    assert.equal(String(url), `https://${shop.domain}/admin/api/${skuWriterApiVersion}/graphql.json`);
+    assert.equal(new Headers(init?.headers).get('X-Shopify-Access-Token'), 'fixture-writer-token');
+    const request = JSON.parse(String(init?.body)) as SkuRequest;
+    if (request.query.startsWith('query Tees4SkuWriteIdentity')) {
+      calls.push('identity');
+      return shopifyResponse({ data: { shop: { id: shop.id, myshopifyDomain: shop.domain },
+        currentAppInstallation: { id: installationId, accessScopes: scopes.map(handle => ({ handle })) } } });
+    }
+    calls.push('mutation');
+    requests.push(request);
+    return result(request);
+  };
+  const approveLive = () => approveSkuReplacement(store, id, plan.id, 'Fixture owner', 'Fixture live approval', evidence, clock, true);
+  const run = (approvalSequence: number, overrides: Partial<typeof liveEvidence> = {}, execute = true, planId = plan.id) =>
+    executeSkuReplacement(store, { execute, bindingId: id, planId, approvalSequence }, { ...liveEvidence, ...overrides },
+      shopifySkuWriter(skuWriterEnv, fetcher, clock), clock);
+  return { ...fixture, liveEvidence, run, approveLive, pause, calls, clock,
+    setTime: (value: number) => { now = value; }, setScopes: (value: string[]) => { scopes = value; },
+    setInstallation: (value: string) => { installationId = value; }, setResult: (value: typeof result) => { result = value; } };
+}
+
+function shopifyResponse(body: unknown, status = 200) {
+  return Response.json(body, { status, headers: { 'X-Shopify-API-Version': skuWriterApiVersion, 'X-Request-ID': 'fixture-request-id' } });
+}
+
+test('live path authenticates the separate installation and sends exactly the approved 14 SKU-only updates', async t => {
+  const f = await liveExecutionFixture(t);
+  const approval = await f.approveLive();
+  const result = await f.run(approval.approvalSequence);
+  assert.equal(result.status, 'VERIFIED_COMPLETE');
+  assert.deepEqual(f.requests, [f.dryRun.request]);
+  assert.deepEqual(f.calls, ['token', 'identity', 'export', 'source', 'source', 'product', 'product', 'mutation', 'product', 'product']);
+  const events = f.store.shopifySkuJournal.inspect(f.plan.id).events;
+  assert.deepEqual(events.map(entry => entry.event), ['approved', 'claimed', 'shopify_response', 'readback']);
+  const claim = events[1];
+  assert.equal(claim?.event === 'claimed' && claim.live?.installationId, skuWriterInstallation);
+  assert.equal(claim?.event === 'claimed' && claim.live?.hextomPause.source, f.pause.source);
+  assert.equal(events[3]?.event === 'readback' && events[3].hextomPauseVerified, true);
+});
+
+test('live path rejects an inexact, simulated or expired approval without contacting Shopify', async t => {
+  const f = await liveExecutionFixture(t);
+  const simulationApproval = await f.approve();
+  await assert.rejects(f.run(simulationApproval.approvalSequence), { code: 'SKU_EXECUTION_APPROVAL_MODE' });
+  const approval = await f.approveLive();
+  await assert.rejects(f.run(approval.approvalSequence, {}, false), { code: 'SKU_EXECUTION_APPROVAL_REQUIRED' });
+  await assert.rejects(f.run(approval.approvalSequence, {}, true, '1'.repeat(64)), { code: 'SKU_EXECUTION_APPROVAL_REQUIRED' });
+  f.setTime(approval.expiresAt);
+  await assert.rejects(f.run(approval.approvalSequence), { code: 'SKU_EXECUTION_APPROVAL_CHANGED' });
+  assert.deepEqual(f.calls, []);
+});
+
+test('live path verifies the acting installation ID and write_products grant', async t => {
+  const f = await liveExecutionFixture(t);
+  const { approvalSequence } = await f.approveLive();
+  f.setScopes(['read_products']);
+  await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_WRITE_SCOPE_REQUIRED' });
+  f.setScopes(['write_products']);
+  f.setInstallation('gid://shopify/AppInstallation/125');
+  await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_INSTALLATION_UNAUTHORIZED' });
+  assert.deepEqual(f.calls, ['token', 'identity', 'token', 'identity']);
+});
+
+test('live path stops on missing, stale, mismatched or withdrawn Hextom pause evidence', async t => {
+  const f = await liveExecutionFixture(t);
+  const { approvalSequence } = await f.approveLive();
+  for (const pause of [null, { ...f.pause, paused: false }, { ...f.pause, productId: 'gid://shopify/Product/9' },
+    { ...f.pause, holdUntil: f.clock() }]) {
+    await assert.rejects(f.run(approvalSequence, { readPause: () => pause }), { code: 'SKU_EXECUTION_HEXTOM_HOLD' });
+  }
+  let reads = 0;
+  await assert.rejects(f.run(approvalSequence, { readPause: () => ++reads === 1 ? f.pause : null }),
+    { code: 'SKU_EXECUTION_HEXTOM_HOLD' });
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.store.shopifySkuJournal.inspect(f.plan.id).events.at(-1)?.event, 'cancelled_before_send');
+});
+
+test('live readback holds an acknowledged result when the Hextom pause expires during the reads', async t => {
+  const f = await liveExecutionFixture(t);
+  const { approvalSequence } = await f.approveLive();
+  let reads = 0;
+  const result = await f.run(approvalSequence, { shopify: { async product() {
+    if (++reads === 4) f.setTime(f.pause.holdUntil);
+    return f.evidence.shopify.product();
+  } } });
+  assert.equal(result.status, 'HELD_HEXTOM_PAUSE_UNVERIFIED');
+  assert.equal((await reconcileSkuReplacement(f.store, f.plan.id, f.evidence, f.clock)).status, 'HELD_HEXTOM_PAUSE_UNVERIFIED');
+  await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_ALREADY_CLAIMED' });
+  assert.equal(f.requests.length, 1);
+});
+
+test('live path blocks the protected window and rechecks the cutoff immediately before dispatch', async t => {
+  const f = await liveExecutionFixture(t);
+  const cutoff = Date.parse('2026-11-27T22:20:00Z');
+  const end = Date.parse('2026-11-28T03:10:00Z');
+  const prepare = async (at: number) => {
+    f.setTime(at);
+    Object.assign(f.pause, { verifiedAt: at, holdUntil: at + 60_000 });
+    return (await f.approveLive()).approvalSequence;
+  };
+  const afternoon = await prepare(cutoff - 1);
+  let reads = 0;
+  await assert.rejects(f.run(afternoon, { readPause: () => {
+    if (++reads === 2) f.setTime(cutoff);
+    return f.pause;
+  } }), { code: 'HEXTOM_WINDOW' });
+  assert.equal(f.store.shopifySkuJournal.inspect(f.plan.id).events.at(-1)?.event, 'cancelled_before_send');
+  await assert.rejects(f.run(afternoon), { code: 'HEXTOM_WINDOW' });
+  const evening = await prepare(end - 1);
+  await assert.rejects(f.run(evening), { code: 'HEXTOM_WINDOW' });
+  assert.equal(f.requests.length, 0);
+  f.setTime(end);
+  assert.equal((await f.run(evening)).status, 'VERIFIED_COMPLETE');
+});
+
+test('live path blocks changes to Mockupify export provenance before dispatch', async t => {
+  const f = await liveExecutionFixture(t);
+  const { approvalSequence } = await f.approveLive();
+  await assert.rejects(f.run(approvalSequence, { async readExport(id) {
+    const detail = await f.liveEvidence.readExport(id);
+    detail.products[0]!.shopifyProductGid = 'gid://shopify/Product/9';
+    return detail;
+  } }), { code: 'MOCKUPIFY_PROVENANCE_REQUIRED' });
+  assert.equal(f.requests.length, 0);
+});
+
+test('live path holds partial mutation results and requires explicit read-only reconciliation', async t => {
+  const f = await liveExecutionFixture(t);
+  const { approvalSequence } = await f.approveLive();
+  f.setResult(request => shopifyResponse({ data: { productVariantsBulkUpdate: {
+    product: { id: productGid }, productVariants: f.apply(request, 3),
+    userErrors: [{ code: 'INVALID_INPUT', field: ['variants', '3', 'inventoryItem', 'sku'], message: 'Fixture error' }],
+  } } }));
+  await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_RECONCILIATION_REQUIRED' });
+  assert.equal(f.calls.at(-1), 'mutation');
+  const recovery = await reconcileSkuReplacement(f.store, f.plan.id, f.evidence, f.clock);
+  assert.equal(recovery.status, 'HELD_PARTIAL_UPDATE');
+  assert.equal(recovery.variants.filter(variant => variant.status === 'AT_TARGET').length, 3);
+  await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_ALREADY_CLAIMED' });
+  assert.equal(f.requests.length, 1);
+});
+
+test('live path retains the exclusive claim after a connection interruption and restart', async t => {
+  const path = databasePath(t);
+  const f = await liveExecutionFixture(t, path);
+  const { approvalSequence } = await f.approveLive();
+  f.setResult(request => {
+    f.apply(request);
+    throw new DOMException('Fixture timeout', 'TimeoutError');
+  });
+  await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_RECONCILIATION_REQUIRED' });
+  assert.equal(f.calls.at(-1), 'mutation');
+  const restarted = new Store(path, { existing: true });
+  t.after(() => restarted.close());
+  assert.equal((await reconcileSkuReplacement(restarted, f.plan.id, f.evidence, f.clock)).status, 'VERIFIED_TARGETS_DISPATCH_UNCONFIRMED');
+  await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_ALREADY_CLAIMED' });
+  assert.equal(f.requests.length, 1);
+});
+
+test('live mutation transport does not retry a throttled response', async t => {
+  const f = await liveExecutionFixture(t);
+  const { approvalSequence } = await f.approveLive();
+  f.setResult(() => shopifyResponse({ errors: [{ extensions: { code: 'THROTTLED' } }] }, 429));
+  await assert.rejects(f.run(approvalSequence), { code: 'SKU_EXECUTION_RECONCILIATION_REQUIRED' });
+  const event = f.store.shopifySkuJournal.inspect(f.plan.id).events.at(-1);
+  assert.equal(event?.event === 'shopify_response' && event.response.httpStatus, 429);
+  assert.equal(f.requests.length, 1);
+});
+
+test('acknowledged live mutation with interrupted readback requires read-only reconciliation', async t => {
+  const f = await liveExecutionFixture(t);
+  const { approvalSequence } = await f.approveLive();
+  let reads = 0;
+  await assert.rejects(f.run(approvalSequence, { shopify: { async product() {
+    if (++reads === 3) throw new WorkerError('SHOPIFY_TRANSIENT', 'Fixture readback interruption');
+    return f.evidence.shopify.product();
+  } } }), { code: 'SKU_EXECUTION_RECONCILIATION_REQUIRED' });
+  assert.equal(f.store.shopifySkuJournal.inspect(f.plan.id).events.at(-1)?.event, 'readback_error');
+  assert.equal((await reconcileSkuReplacement(f.store, f.plan.id, f.evidence, f.clock)).status, 'HELD_HEXTOM_PAUSE_UNVERIFIED');
+  assert.equal(f.requests.length, 1);
 });

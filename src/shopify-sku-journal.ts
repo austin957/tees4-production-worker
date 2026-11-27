@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { WorkerError } from './model.js';
 import type { SkuReplacementPlan } from './shopify-sku-execution.js';
+import type { VerifiedHextomPause } from './shopify-sku-hextom.js';
 import type { SkuBulkResponse } from './shopify-sku-write-adapter.js';
 import { shopifySkuSchema } from './store-schema.js';
 
-type Approval = { by: string; source: string; approvedAt: number; expiresAt: number };
+type Approval = { by: string; source: string; approvedAt: number; expiresAt: number; forLive?: true };
 export type Dispatch = { id: string; planId: string; approvalSequence: number; claimedAt: number };
+export type LiveDispatchEvidence = { installationId: string; hextomPause: VerifiedHextomPause };
 type VariantResult = {
   variantId: string;
   observedSku: string | null;
@@ -16,11 +18,11 @@ type VariantResult = {
 type JournalEvent =
   | { event: 'approved'; at: number; approvalSequence: number }
   | { event: 'blocked'; at: number; code: string }
-  | { event: 'claimed'; at: number; dispatchId: string; approvalSequence: number }
+  | { event: 'claimed'; at: number; dispatchId: string; approvalSequence: number; live?: LiveDispatchEvidence }
   | { event: 'cancelled_before_send'; at: number; dispatchId: string; code: string }
   | { event: 'shopify_response'; at: number; dispatchId: string; response: SkuBulkResponse }
   | { event: 'dispatch_error' | 'readback_error'; at: number; dispatchId: string; code: string }
-  | { event: 'readback'; at: number; dispatchId: string; status: string; variants: VariantResult[] };
+  | { event: 'readback'; at: number; dispatchId: string; status: string; variants: VariantResult[]; hextomPauseVerified?: boolean };
 
 export class ShopifySkuJournal {
   constructor(private readonly db: DatabaseSync, private readonly transaction: <T>(run: () => T) => T) {}
@@ -61,8 +63,11 @@ export class ShopifySkuJournal {
     return JSON.parse(row.body as string) as SkuReplacementPlan;
   }
 
-  assertApproval(planId: string, sequence: number, now: number): void {
+  assertApproval(planId: string, sequence: number, now: number, forLive = false): void {
     const approval = this.latestApproval(planId);
+    if ((approval.forLive === true) !== forLive) {
+      throw new WorkerError('SKU_EXECUTION_APPROVAL_MODE', 'A separate SKU approval for this execution mode is required.');
+    }
     if (approval.sequence !== sequence || now < approval.approvedAt || now >= approval.expiresAt) {
       throw new WorkerError('SKU_EXECUTION_APPROVAL_CHANGED', 'SKU execution approval has expired or changed.');
     }
@@ -76,17 +81,17 @@ export class ShopifySkuJournal {
     }
   }
 
-  claim(plan: SkuReplacementPlan, sequence: number, now: number, assertEvidence: () => void): Dispatch {
+  claim(plan: SkuReplacementPlan, sequence: number, now: number, assertEvidence: () => void, live?: LiveDispatchEvidence): Dispatch {
     return this.transaction(() => {
       this.assertNoDispatch(plan);
       assertEvidence();
-      this.assertApproval(plan.id, sequence, now);
+      this.assertApproval(plan.id, sequence, now, live !== undefined);
       const id = randomUUID();
       this.db.prepare(`
         INSERT INTO shopify_sku_dispatches (id, plan_id, approval_sequence, shop_id, product_id, claimed_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(id, plan.id, sequence, plan.shopId, plan.productId, now);
-      this.append(plan.id, { event: 'claimed', at: now, dispatchId: id, approvalSequence: sequence });
+      this.append(plan.id, { event: 'claimed', at: now, dispatchId: id, approvalSequence: sequence, ...(live ? { live } : {}) });
       return { id, planId: plan.id, approvalSequence: sequence, claimedAt: now };
     });
   }

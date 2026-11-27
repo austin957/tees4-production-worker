@@ -13,6 +13,8 @@ import type { ProductRead, ShopifyReadonlyClient } from './shopify-readonly.js';
 import { findMasterInputSkuRow } from './shopify-reconciliation.js';
 import type { Store } from './store.js';
 
+type ExportDetail = ReturnType<typeof parseExportDetail>;
+
 function settled(claim: MockupifyClaim | undefined) {
   return claim?.state === 'acknowledged' || claim?.state === 'recovered';
 }
@@ -35,21 +37,22 @@ function verifiedExport(binding: ProductBinding, { journal, history }: ReturnTyp
     start?.operation === 'start_export' && start.json.batch === batchId && claims.start_export?.designId === designId &&
     isDeepStrictEqual(start.json.colors, correlation.mockupifyColorIds);
   const observation = history.findLast(event => event && typeof event === 'object' && 'event' in event &&
-    event.event === 'mockupify_export_read' && 'detail' in event) as { detail: ReturnType<typeof parseExportDetail> } | undefined;
-  const detail = observation?.detail;
-  const product = detail?.products?.[0];
-  const observationMatches = detail?.id === exportId && detail?.status === 'finished' && detail.errors?.length === 0 &&
-    detail.batch?.id === batchId && detail.batch?.name === batchName && detail.products?.length === 1 &&
-    product?.status === 'created' && product.shopifyProductGid === binding.productId && product.design?.id === designId &&
-    product.design.designReference === designReference && product.product?.id === correlation.mockupifyTemplateId && Array.isArray(product.colorIds) &&
-    isDeepStrictEqual([...product.colorIds].sort(), [...correlation.mockupifyColorIds].sort());
+    event.event === 'mockupify_export_read' && 'detail' in event) as { detail: ExportDetail } | undefined;
+  const matchesExport = (detail: ExportDetail | undefined) => {
+    const product = detail?.products?.[0];
+    return detail?.id === exportId && detail?.status === 'finished' && detail.errors?.length === 0 &&
+      detail.batch?.id === batchId && detail.batch?.name === batchName && detail.products?.length === 1 &&
+      product?.status === 'created' && product.shopifyProductGid === binding.productId && product.design?.id === designId &&
+      product.design.designReference === designReference && product.product?.id === correlation.mockupifyTemplateId &&
+      Array.isArray(product.colorIds) && isDeepStrictEqual([...product.colorIds].sort(), [...correlation.mockupifyColorIds].sort());
+  };
   if (plan.mode !== 'production' || journal.registrationState === 'pending_review' || !journal.exportTerminal ||
     journal.exportStatus !== 'validated_for_binding_review' || journal.publicationObserved ||
     journal.shopifyProductGid !== binding.productId || !isDeepStrictEqual(journal.observedProductGids, [binding.productId]) ||
-    batchId === null || designId === null || exportId === null || !sourceMatches || !claimsMatch || !observationMatches) {
+    batchId === null || designId === null || exportId === null || !sourceMatches || !claimsMatch || !matchesExport(observation?.detail)) {
     throw new WorkerError('MOCKUPIFY_PROVENANCE_REQUIRED', 'The binding must match a verified, finished Mockupify export and its settled operation claims.');
   }
-  return { correlationId, batchId, designId, exportId };
+  return { provenance: { correlationId, batchId, designId, exportId }, matchesExport };
 }
 
 function optionPair(options: Record<string, string>) {
@@ -106,6 +109,7 @@ export function skuEvidenceDigest(binding: ProductBinding, record: ReturnType<St
 
 export async function validateMockupifySkuReplacement(
   store: EvidenceStore, bindingId: string, evidence: SkuReplacementEvidence, shopifyLast = false,
+  readExport?: (id: number) => Promise<ExportDetail>,
 ) {
   const binding = store.getProductBinding(bindingId);
   if (binding.status !== 'approved' || !binding.confirmation) {
@@ -120,7 +124,10 @@ export async function validateMockupifySkuReplacement(
   const record = store.inspectMockupifyJournal(correlationId);
   const { journal } = record;
   const evidenceDigest = skuEvidenceDigest(binding, record);
-  const provenance = verifiedExport(binding, record, correlation);
+  const { provenance, matchesExport } = verifiedExport(binding, record, correlation);
+  if (readExport && !matchesExport(await readExport(provenance.exportId))) {
+    throw new WorkerError('MOCKUPIFY_PROVENANCE_REQUIRED', 'The live Mockupify export differs from the verified finished export.');
+  }
   const checkSource = async () => {
     const rows = await evidence.readMasterInput();
     const finding = findMasterInputSkuRow({ kind: 'live', rows }, binding, binding.rowNumber);

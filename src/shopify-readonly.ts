@@ -58,6 +58,11 @@ const shopQuery = `query Tees4ReadIdentity {
   currentAppInstallation { accessScopes { handle } }
 }`;
 
+const writeIdentityQuery = `query Tees4SkuWriteIdentity {
+  shop { id myshopifyDomain }
+  currentAppInstallation { id accessScopes { handle } }
+}`;
+
 const productsQuery = `query Tees4ReadProducts($first: Int!, $after: String) {
   products(first: $first, after: $after, sortKey: CREATED_AT, reverse: true) {
     nodes { id title }
@@ -112,7 +117,7 @@ const provenanceQuery = `query Tees4ReadProvenance($id: ID!) {
 }`;
 
 const queries = {
-  identity: shopQuery, products: productsQuery, adjustCandidates: adjustCandidatesQuery,
+  identity: shopQuery, writeIdentity: writeIdentityQuery, products: productsQuery, adjustCandidates: adjustCandidatesQuery,
   product: productReadQuery(false), exportProduct: productReadQuery(true), provenance: provenanceQuery,
   checkPublicationRead: checkPublicationReadQuery,
 };
@@ -276,6 +281,24 @@ class ShopifyReadTransport {
     }, JSON.stringify({ query: queries[operation], variables }), true);
   }
 
+  async authorizeSkuWriter(shopId: string, installationId: string, scope: string) {
+    const token = await this.token();
+    const data = await this.query(token, 'writeIdentity', {});
+    const shop = record(data.shop);
+    if (shop.myshopifyDomain !== this.config.domain || shopifyGid(shop.id, 'Shop') !== shopId) {
+      throw new WorkerError('SHOPIFY_SHOP_MISMATCH', 'The SKU writer is authenticated to a different shop.');
+    }
+    const installation = data.currentAppInstallation;
+    if (!installation || record(installation).id !== installationId) {
+      throw new WorkerError('SKU_EXECUTION_INSTALLATION_UNAUTHORIZED', 'The acting Shopify app installation is not authorized for SKU writes.');
+    }
+    const scopes = array(record(installation).accessScopes).map(value => string(record(value).handle));
+    if (!scopes.includes(scope)) {
+      throw new WorkerError('SKU_EXECUTION_WRITE_SCOPE_REQUIRED', 'The Shopify installation requires write_products for this mutation.');
+    }
+    return { token, expiresAt: this.grant!.expiresAt, id: shopId, scopes };
+  }
+
   async readIdentity(token: string): Promise<ShopIdentity> {
     const data = await this.query(token, 'identity', {});
     const shop = record(data.shop);
@@ -293,6 +316,12 @@ class ShopifyReadTransport {
     const id = shopifyGid(shop.id, 'Shop');
     return { id, domain: this.config.domain, apiVersion: this.config.version, scopes };
   }
+}
+
+export function authorizeShopifySkuWriter(
+  config: ShopifyReadConfig, installationId: string, scope: string, fetcher: typeof fetch, clock: () => number,
+) {
+  return new ShopifyReadTransport(config, fetcher, undefined, clock).authorizeSkuWriter(config.shopId, installationId, scope);
 }
 
 export async function identifyShop(config: ShopifyConnectionConfig, fetcher?: typeof fetch): Promise<ShopIdentity> {
