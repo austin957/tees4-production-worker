@@ -567,7 +567,41 @@ test('the supervised request journal enforces the hourly account quota with a ro
   store.reserveMockupifyRead(initialTime + 3_600_000);
 });
 
-test('the pilot blocks export without publication read access or enough verified time before Hextom can publish', async t => {
+test('the writer accepts a reviewed template adjust tag and rejects adjust in the design tags', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const writer = api.writer(store);
+  await assert.rejects(writer.prepare(input, { ...review, design: { ...review.design, search_tags: 'test, adjust ,audit' } }, png),
+    { code: 'MOCKUPIFY_REVIEW_REQUIRED' });
+  await assert.rejects(writer.prepare(input, { ...review, product: { ...review.product, tags: [...review.product.tags, 'adjust'] } }, png),
+    { code: 'MOCKUPIFY_REVIEW_REQUIRED' });
+  const { plan } = await writer.prepare(input, review, png);
+  assert.deepEqual(plan.review.product.tags, ['test', 'audit', 'adjust']);
+  assert.equal(plan.review.design.search_tags, 'test,audit');
+  assert.equal(plan.source.tags, 'test,audit');
+});
+
+test('export reconciliation checks the exact reviewed Shopify tags, including adjust', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const api = new FakeMockupify();
+  const id = await readyToExport(store, api);
+  const writer = api.writer(store);
+  await writer.dispatch(id, 'start_export', api.approve(store, id, 'start_export'));
+  api.finish();
+  const { tags } = review.product;
+  for (const mismatch of [tags.filter(tag => tag !== 'adjust'), [...tags, 'unexpected'], [...tags, 'adjust']]) {
+    api.productOverride.tags = mismatch;
+    const held = await writer.reconcile(id);
+    assert.equal(held.exportStatus, 'held');
+    assert.equal(held.shopifyProductGid, null);
+  }
+  api.productOverride.tags = [...tags].reverse();
+  assert.equal((await writer.reconcile(id)).exportStatus, 'validated_for_binding_review');
+});
+
+test('the pilot expects adjust and blocks export without publication read access or enough verified time before Hextom can publish', async t => {
   const store = new Store(':memory:');
   t.after(() => store.close());
   const api = new FakeMockupify();
@@ -579,9 +613,14 @@ test('the pilot blocks export without publication read access or enough verified
   await assert.rejects(writer.dispatch(id, 'start_export', api.approve(store, id, 'start_export')),
     { code: 'SHOPIFY_PERMISSION' });
   api.verifyPublicationAccess = async () => {};
-  api.now = review.publicationSafety.endsAt - review.publicationSafety.minimumMinutes * 60_000;
-  await assert.rejects(writer.dispatch(id, 'start_export', api.approve(store, id, 'start_export')),
-    { code: 'MOCKUPIFY_PUBLICATION_WINDOW' });
+  for (const now of [
+    review.publicationSafety.startsAt - 1,
+    review.publicationSafety.endsAt - review.publicationSafety.minimumMinutes * 60_000,
+  ]) {
+    api.now = now;
+    await assert.rejects(writer.dispatch(id, 'start_export', api.approve(store, id, 'start_export')),
+      { code: 'MOCKUPIFY_PUBLICATION_WINDOW' });
+  }
   assert.equal(store.getMockupifyJournal(id).claims.start_export, undefined);
   assert.deepEqual(api.posts, ['/api/batches/', '/api/designs/']);
 });

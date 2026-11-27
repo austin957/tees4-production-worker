@@ -19,7 +19,7 @@ export const review: MockupifyReview = {
   shop: { ...shop, connectionEvidence: 'Fixture account settings' },
   product: {
     title: 'Fixture title Adult Tank Top Sample', descriptionHtml: '<p>Designed by Fixture Designer</p>',
-    vendor: 'Fixture vendor', tags: ['test', 'audit'], status: 'ACTIVE',
+    vendor: 'Fixture vendor', tags: ['test', 'audit', 'adjust'], status: 'ACTIVE',
     variants: [
       { options: { Color: 'Black', Size: 'M' }, price: '5.00' },
       { options: { Color: 'White', Size: 'M' }, price: '6.00' },
@@ -27,7 +27,7 @@ export const review: MockupifyReview = {
   },
   exclusiveBatchControlEvidence: 'Fixture operator lock',
   publicationSafety: {
-    evidence: 'Fixture verified Hextom exclusion through test end', startsAt: initialTime - 60_000,
+    evidence: 'Fixture verified interval before any eligible Hextom run', startsAt: initialTime - 60_000,
     endsAt: initialTime + 2 * 60 * 60_000, minimumMinutes: 15,
   },
 };
@@ -75,7 +75,7 @@ export class FakeMockupify {
   afterPost?: (path: string, data: unknown) => Promise<void>;
   beforeRead?: (path: string) => void;
   responseOverride?: (path: string) => Response | undefined;
-  productOverride: { status?: string; publishedAt?: string | null; vendor?: string; hasSalesChannelPublication?: boolean } = {};
+  productOverride: { status?: string; publishedAt?: string | null; vendor?: string; tags?: string[]; hasSalesChannelPublication?: boolean } = {};
   includePublicationEvidence = true;
   verifyPublicationAccess: () => Promise<void> = async () => {};
 

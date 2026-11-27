@@ -31,11 +31,11 @@ Supply these fields in the separate metadata-review JSON. Use UTF-8 JSON and sto
 | `artworkRegistryName`, `artworkNameResolution`, `designerAttribution` | `Bold Arrow Emblem`, the evidence for keeping `SKU TEST` in the source cell, and `Tees-4` |
 | `design` | Exact strings for `title`, `description`, `extra_title`, `search_tags`, `vendor`, and `extra_price`. The pilot uses an empty `extra_title`, `Family, Grandpa`, `test test` and `0.00`. Include the attribution in the description. |
 | `shop` | `id` and `domain` for the approved shop, with independent `connectionEvidence` linking the Mockupify account to it |
-| `product` | Exact expected Shopify `title`, `descriptionHtml` including the attribution, `vendor`, `tags` array, and `status` of `ACTIVE`. Provide `variants` as all 14 reviewed entries, each with an `options` object mapping exact option names to strings and a `price` string. Catalog color prices alone cannot establish final Shopify variant prices. |
+| `product` | Exact expected Shopify `title`, `descriptionHtml` including the attribution, `vendor`, and `status` of `ACTIVE`. Set the `tags` array to exactly `readytobuy`, `adult`, `S105`, `adjust`, `stock`, `Family`, and `Grandpa` in any order, with each tag listed once. Provide `variants` as all 14 reviewed entries, each with an `options` object mapping exact option names to strings and a `price` string. Catalog color prices alone cannot establish final Shopify variant prices. |
 | `exclusiveBatchControlEvidence` | Evidence that this pilot has exclusive control of its isolated batch through export completion |
 | `publicationSafety` | Verified Hextom rule and safety `evidence`, interval `startsAt` and `endsAt` as Unix epoch milliseconds, and the required `minimumMinutes` for completing the export and observations |
 
-The complete plan, including its publication-safety interval, is bound into each operation's digest. Inspect it and review the exact preview before requesting approval. If the plan conflicts with an existing registration, stop and inspect the journal. The CLI has no plan replacement or claim reset command.
+Template 10779 contributes `adjust` to the expected Shopify tags. The design upload uses `Family, Grandpa`. The template tag makes the Active product potentially eligible for Hextom publication, and the pilot still needs a verified safe interval. The complete plan, including its publication-safety interval, is bound into each operation's digest. Inspect it and review the exact preview before requesting approval. If the plan conflicts with an existing registration, stop and inspect the journal. The CLI has no plan replacement or claim reset command.
 
 ### Dispatch one operation
 

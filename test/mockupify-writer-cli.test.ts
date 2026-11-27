@@ -34,7 +34,7 @@ function pilotFixture() {
   const api = new FakeMockupify();
   const source = {
     ...api.rows[0]!, sourceRow: pilot.row, sheetArtworkName: pilot.sheetArtworkName, title: pilot.title,
-    artworkSku: pilot.artworkSku, productSku: pilot.productSku, vendor: pilot.vendor, tags: pilot.tags.join(', '),
+    artworkSku: pilot.artworkSku, productSku: pilot.productSku, vendor: pilot.vendor, tags: 'Family, Grandpa',
   };
   const correlation = mockupifyCorrelation(masterInput.spreadsheetId, source.productSku);
   const catalogColors = pilot.colors.map(color => ({
@@ -51,7 +51,7 @@ function pilotFixture() {
   metadata.design.search_tags = source.tags;
   metadata.product.title = 'Synthetic exact Shopify title';
   metadata.product.descriptionHtml = '<p>Synthetic description Tees-4</p>';
-  metadata.product.tags = [...pilot.tags];
+  metadata.product.tags = ['readytobuy', 'adult', 'S105', 'adjust', 'stock', 'Family', 'Grandpa'];
   metadata.product.variants = catalogColors.flatMap(color => color.sizes.map(size => ({
     options: { Color: color.name, Size: size }, price: '12.34',
   })));
@@ -111,6 +111,30 @@ test('registration rejects malformed or mismatched metadata and wrong PNG bytes 
   await assert.rejects(register(metadata), { code: 'MOCKUPIFY_PNG_EVIDENCE_MISMATCH' });
   assert.equal(fetch.mock.callCount(), 0);
   assert.equal(auth.mock.callCount(), 0);
+});
+
+test('registration requires the exact combined Shopify tags while preserving the design tags', async t => {
+  const { database, json, artwork } = localFiles(t);
+  const { metadata, preparation } = pilotFixture();
+  const preparePath = json('preparation.json', preparation);
+  const register = (value: unknown) => runMockupifyWriterCommand('mockupify-writer-register',
+    [preparePath, artwork, json('metadata review.json', value)], database);
+  const { tags } = metadata.product;
+  for (const invalid of [
+    ['Family', 'Grandpa'],
+    tags.filter(tag => tag !== 'adjust'),
+    [...tags, 'unexpected'],
+    [...tags, 'adjust'],
+    tags.map(tag => tag === 'adjust' ? 'Adjust' : tag),
+  ]) {
+    await assert.rejects(register({ ...metadata, product: { ...metadata.product, tags: invalid } }),
+      { code: 'MOCKUPIFY_PILOT_REVIEW_MISMATCH' });
+  }
+  await assert.rejects(register({ ...metadata, design: { ...metadata.design, search_tags: 'Family, Grandpa, adjust' } }),
+    { code: 'MOCKUPIFY_PILOT_REVIEW_MISMATCH' });
+  // Exact tags in any order pass review and reach the PNG gate.
+  await assert.rejects(register({ ...metadata, product: { ...metadata.product, tags: [...tags].reverse() } }),
+    { code: 'MOCKUPIFY_PNG_EVIDENCE_MISMATCH' });
 });
 
 test('production CLI requires a separate unexpired approval, durable storage and a fresh source before one batch claim', async t => {

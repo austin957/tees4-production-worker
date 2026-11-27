@@ -12,7 +12,8 @@ export const mockupifyPilot = {
   title: 'Bold Arrow Emblem',
   vendor: 'test test',
   attribution: 'Tees-4',
-  tags: ['Family', 'Grandpa'],
+  designTags: ['Family', 'Grandpa'],
+  templateTags: ['readytobuy', 'adult', 'S105', 'adjust', 'stock'],
   garment: 'Adult Tank Top',
   templateId: 10779,
   colors: [{ name: 'Black', id: 20514 }, { name: 'White', id: 20515 }],
@@ -96,10 +97,11 @@ export function parseMockupifyReview(value: unknown): MockupifyReview {
 export function assertMockupifyPilotReview(review: MockupifyReview): void {
   const pilot = mockupifyPilot;
   const { design, shop, product } = review;
+  const expectedProductTags = [...pilot.designTags, ...pilot.templateTags].sort();
   if (review.artworkRegistryName !== pilot.title || review.designerAttribution !== pilot.attribution ||
     design.title !== pilot.title || design.vendor !== pilot.vendor || product.vendor !== pilot.vendor ||
-    design.extra_title !== '' || design.extra_price !== '0.00' || design.search_tags !== pilot.tags.join(', ') ||
-    !isDeepStrictEqual([...product.tags].sort(), pilot.tags) || product.variants.length !== pilot.variantCount ||
+    design.extra_title !== '' || design.extra_price !== '0.00' || design.search_tags !== pilot.designTags.join(', ') ||
+    !isDeepStrictEqual([...product.tags].sort(), expectedProductTags) || product.variants.length !== pilot.variantCount ||
     shop.id !== pilot.shopId || shop.domain !== pilot.shopDomain) {
     throw new WorkerError('MOCKUPIFY_PILOT_REVIEW_MISMATCH', 'The reviewed metadata must match the exact approved Bold Arrow Emblem pilot.');
   }
@@ -112,7 +114,7 @@ export function assertMockupifyPilotPlan(plan: SupervisedMockupifyPlan): void {
   if (correlation.spreadsheetId !== masterInput.spreadsheetId || source.sourceRow !== pilot.row ||
     source.artworkSku !== pilot.artworkSku || source.productSku !== pilot.productSku ||
     source.sheetArtworkName !== pilot.sheetArtworkName || source.title !== pilot.title ||
-    source.vendor !== pilot.vendor || source.tags !== pilot.tags.join(', ') || source.garment !== pilot.garment ||
+    source.vendor !== pilot.vendor || source.tags !== pilot.designTags.join(', ') || source.garment !== pilot.garment ||
     correlation.mockupifyTemplateId !== pilot.templateId ||
     !isDeepStrictEqual(correlation.mockupifyColorIds, pilot.colors.map(color => color.id)) ||
     !isDeepStrictEqual(catalogColors.map(({ id, name }) => ({ name, id })), pilot.colors) ||

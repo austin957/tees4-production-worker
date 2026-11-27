@@ -79,7 +79,7 @@ function assertReview(source: SupervisedSourceRow, review: MockupifyReview) {
   if (!validDesign || !nonblank(product.title) || typeof product.descriptionHtml !== 'string' ||
     !product.descriptionHtml.includes(review.designerAttribution) ||
     product.status !== 'ACTIVE' || !Array.isArray(product.tags) || !product.tags.every(nonblank) ||
-    product.tags.includes('adjust') || new Set(product.tags).size !== product.tags.length ||
+    new Set(product.tags).size !== product.tags.length ||
     !Array.isArray(product.variants) || product.variants.length === 0 ||
     product.variants.some(variant => !/^\d+(?:\.\d{1,2})?$/.test(variant.price) ||
       !Object.keys(variant.options).length || Object.entries(variant.options).some(([name, value]) => !nonblank(name) || !nonblank(value))) ||

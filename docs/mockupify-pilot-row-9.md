@@ -12,9 +12,12 @@ The November 25, 2026 Phase 21 instructions and Phase 21A clarification are the 
 | Original artwork-name cell | `SKU TEST`, preserved verbatim |
 | Mockupify design title | `Bold Arrow Emblem` |
 | Artwork SKU and Product SKU | `8419620257` and `8419620257-S105` |
-| Garment and approved template | Adult Tank Top, `10779` |
+| Garment and approved template | Adult Tank Top, `10779` (type `Tank Top`) |
 | Approved colors in request order | Black `20514`, White `20515` |
-| Vendor, designer attribution and tags | `test test`, `Tees-4`, `Family, Grandpa` |
+| Vendor and designer attribution | `test test`, `Tees-4` |
+| Master Input and Mockupify design tags | `Family, Grandpa` |
+| Verified template tags | `readytobuy`, `adult`, `S105`, `adjust`, `stock` |
+| Expected Shopify tags | `readytobuy`, `adult`, `S105`, `adjust`, `stock`, `Family`, `Grandpa` |
 | Approved artwork scope | Reviewed original and compressed copy. Prepared SHA-256 `6bae2628c23f42d960ef36e488bde69f84fe994d68e084218674b465a9354d17` |
 | Intended Shopify destination | `gid://shopify/Shop/76973965603` |
 
@@ -22,10 +25,10 @@ The November 25, 2026 Phase 21 instructions and Phase 21A clarification are the 
 
 - The owner supplied the corrected physical row and its values for columns A, B, E, H and K. The CLI dry-run uses that offline fixture. Supervised preparation and dispatch require a fresh read through the worker's read-only Sheets adapter to verify the physical row, its unique Product SKU, its Artwork SKU and garment, and the rest of the approved source data.
 - The previously reviewed original artwork is a 3300 × 2137 RGBA PNG, 1,542,125 bytes, above the worker's 1,500,000-byte upload limit. Confirm the corrected row's artwork reference before relying on the earlier review. Supply the reviewed compressed bytes matching the approved SHA-256. Keep the original and decoded pixel hashes with the private operational evidence.
-- The authenticated Mockupify template read confirmed both color IDs on template `10779`, each with a base price of `18.99` and sizes X-Small, Small, Medium, Large, X-Large, 2X-Large and 3X-Large. Those selections project 14 color/size combinations. The API exposes neither size price adjustments nor final option ordering.
+- The verified settings for template `10779` use `Color` as the Shopify color option. Each color has a base price of `18.99`, quantity 999, weight 128 grams and sizes X-Small, Small, Medium, Large, X-Large, 2X-Large and 3X-Large. Those selections project 14 color and size combinations. Verify the final Shopify option names and variant prices in the metadata review.
 - The Shopify read-only client verified the shop GID. Mockupify's authenticated OpenAPI contract exposes no connected-shop read. Obtain independent evidence of the account's current Shopify destination. The export request has only `batch` and `colors` fields.
 - The owner confirmed that Mockupify creates an **Active** Shopify product with **zero sales-channel publications** and an existing Hextom automation later assigns channels. In Phase 21B, Shopify Admin GraphQL `2026-10` returned `gid://shopify/Shop/76973965603` and reported exactly `read_products` and `read_publications` for the export verification app. The worker's publication query returned valid data for a sample product. The pilot still requires a direct read of the exact exported Product GID showing zero current or staged sales-channel publications. [Shopify Product publication fields](https://shopify.dev/docs/api/admin-graphql/latest/objects/product#field-Product.fields.resourcePublicationsV2)
-- Mockupify documents that it joins the design title, template title and extra title. With the approved title as the design title, the documented composition yields `Bold Arrow Emblem Adult Tank Top`. A supported title configuration or separate approval for an exact composed title is needed. The final description and tags also combine template and design values. Review the template's actual description and tags, the exact upload fields, the vendor and its distinction from designer attribution, and all variant prices before authorization. Verify the resulting tags exclude `adjust`. [Mockupify OpenAPI](https://mockupify.io/api/schema/)
+- Mockupify documents that it joins the design title, template title and extra title. With the approved title as the design title, the documented composition yields `Bold Arrow Emblem Adult Tank Top`. A supported title configuration or separate approval for an exact composed title is needed. The final description and tags also combine template and design values. Review the exact upload and resulting product metadata and all variant prices before authorization. Keep the source and design tags as `Family, Grandpa`. The Shopify review and reconciliation require the exact seven tags above and reject duplicates. [Mockupify OpenAPI](https://mockupify.io/api/schema/)
 - The task workspace and shared/download directories use the same local overlay. The environment exposes one executor and no configured persistent data volume or separate restore target. Codex starts new tasks from their prepared environment in separate workspaces. The existing SQLite backup and restore test checks the claim, request digest, correlation ID, product binding and both audit histories locally. The pilot requires owner-controlled durable storage and a passing durability check for the actual SQLite path and backup directory. [Codex Cloud task isolation](https://help.openai.com/en/articles/20001545-using-codex-cloud)
 
 ## Hextom publication timing
@@ -46,7 +49,7 @@ The task uses **ALL** of these conditions:
 - Product tag is `adjust`.
 - Product is not published to selected sales channels.
 
-The task publishes qualifying products to Online Store, Facebook & Instagram, Shop, Faire, Inbox, and Google & YouTube. Treat any Active product carrying `adjust` as potentially eligible. If the pilot relies on filter exclusion, verify that the exact exported product will stay excluded throughout the test. The previously observed 6:15 PM SKU transformation and 9:00 PM tag removal are separate tasks and provide no verified timing for channel assignment.
+The task publishes qualifying products to Online Store, Facebook & Instagram, Shop, Faire, Inbox, and Google & YouTube. The pilot’s expected Active product carries the template’s `adjust` tag and is potentially eligible for publication while unpublished to the selected channels. The tag provides no evidence of Hextom completion or a safe interval. The previously observed 6:15 PM SKU transformation and 9:00 PM tag removal are separate tasks and provide no verified timing for channel assignment.
 
 The configured **7:00 PM America/Chicago** run falls within the protected window. The run-history display timezone remains unverified. Approximately **6:00 PM as shown in the run history** is the earliest displayed start among the supplied entries. The difference between the displayed times remains unexplained, and the earliest possible future execution is still unverified. For dispatch planning, treat exposure as possible as soon as the exported product qualifies. A queued or running eligible task could publish it before the first Shopify read.
 
